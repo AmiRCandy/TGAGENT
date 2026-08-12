@@ -1,9 +1,13 @@
-"""Serialisation, the API schema index, entity coercion, and media handling."""
+"""Serialisation, the schema index, entity coercion, media, login, and paging."""
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -15,8 +19,14 @@ from tests.fakes import (
     FakeMessage,
     FakeTelegramClient,
 )
-from tgagent.config.settings import MediaSettings
-from tgagent.errors import EntityResolutionError, MediaTooLarge, MediaTypeRejected
+from tgagent.config.settings import MediaSettings, TelegramSettings
+from tgagent.errors import (
+    AuthenticationError,
+    EntityResolutionError,
+    MediaTooLarge,
+    MediaTypeRejected,
+)
+from tgagent.telegram.auth import LoginFlow
 from tgagent.telegram.client import parse_proxy
 from tgagent.telegram.entities import (
     EntityResolver,
@@ -24,6 +34,7 @@ from tgagent.telegram.entities import (
     extract_target,
     parse_datetime,
 )
+from tgagent.telegram.history import HistoryReader
 from tgagent.telegram.media import MediaManager, sanitise_filename
 from tgagent.telegram.schema import TelegramSchemaIndex, format_entry
 from tgagent.telegram.serialize import (
@@ -34,6 +45,23 @@ from tgagent.telegram.serialize import (
     to_jsonable,
     truncate,
 )
+
+
+class MessageMediaPhoto:
+    """A photo attachment, named after Telethon's class.
+
+    The media summary reports ``type`` from the class name, and the download
+    policy has to key off it: a photo carries neither a MIME type nor a size,
+    unlike a document.
+    """
+
+    def __init__(self) -> None:
+        self.document = None
+        self.photo = SimpleNamespace(id=77, sizes=[])
+        self.webpage = None
+        self.poll = None
+        self.geo = None
+        self.phone_number = None
 
 
 class TestSerialisation:
@@ -64,6 +92,14 @@ class TestSerialisation:
         payload = dialog_to_dict(FakeDialog(1, "@alex", unread=4, message=FakeMessage(9, "hi")))
         assert payload["unread_count"] == 4
         assert payload["last_message"]["text"] == "hi"
+
+    def test_zero_valued_fields_are_still_emitted(self) -> None:
+        # A channel with no members must be distinguishable from one whose member
+        # count Telegram did not report.
+        entity = FakeEntity(1, title="Nobody here", broadcast=True)
+        entity.participants_count = 0  # type: ignore[attr-defined]
+        payload = entity_to_dict(entity)
+        assert payload["participants_count"] == 0
 
     def test_phone_numbers_are_partially_masked(self) -> None:
         entity = FakeEntity(1, first_name="Alex")
@@ -196,6 +232,15 @@ class TestSchemaIndex:
         index.ensure_loaded()
         assert len(index) > 100
 
+    @pytest.mark.parametrize("body", ["[]", "null", "3"])
+    def test_a_cache_that_is_not_an_object_is_rebuilt(self, tmp_path: Path, body: str) -> None:
+        # Valid JSON of the wrong shape is as unusable as invalid JSON.
+        cache = tmp_path / "schema.json"
+        cache.write_text(body, encoding="utf-8")
+        index = TelegramSchemaIndex(cache)
+        index.ensure_loaded()
+        assert len(index) > 100
+
     def test_format_entry_shows_how_to_call_it(self, index: TelegramSchemaIndex) -> None:
         rendered = format_entry(index.get("messages.Search"))
         assert 'tg.invoke_raw("messages.Search"' in rendered
@@ -320,6 +365,17 @@ class TestFilenameSanitisation:
     def test_ordinary_names_survive(self) -> None:
         assert sanitise_filename("Q4 report (final).pdf").endswith(".pdf")
 
+    @pytest.mark.parametrize(
+        "fallback", ["https://t.me/chan_5", "../../x_5", "/etc/shadow", "..", "..\\..\\x"]
+    )
+    def test_the_fallback_is_sanitised_too(self, fallback: str) -> None:
+        # The fallback is built from a caller-supplied peer, so it is no more
+        # trustworthy than the name it stands in for.
+        cleaned = sanitise_filename(None, fallback=fallback)
+        assert Path(cleaned).name == cleaned
+        assert "/" not in cleaned and "\\" not in cleaned
+        assert ".." not in cleaned
+
 
 class TestMediaValidation:
     @pytest.fixture
@@ -372,6 +428,55 @@ class TestMediaValidation:
         with pytest.raises(MediaTypeRejected):
             await media.download_message_media("@alex", 6, run_id="run-1")
 
+    def test_documents_without_a_mime_type_are_refused(self, media: MediaManager) -> None:
+        # Nothing identifies the file, so the allow-list cannot clear it.
+        for mime in ("", None, "   "):
+            with pytest.raises(MediaTypeRejected, match="MIME"):
+                media.check_metadata(size=10, mime_type=mime, file_name="payload.bin")
+
+    def test_photos_are_allowed_despite_carrying_no_mime_type(self, media: MediaManager) -> None:
+        media.check_metadata(
+            size=None, mime_type=None, file_name="chan_5", media_type="MessageMediaPhoto"
+        )
+
+    def test_photos_are_refused_when_images_are_off_the_allow_list(
+        self, gateway: object, tmp_path: Path
+    ) -> None:
+        manager = MediaManager(
+            gateway,  # type: ignore[arg-type]
+            MediaSettings(download_dir=tmp_path, allowed_mime_prefixes=["application/pdf"]),
+            root=tmp_path,
+        )
+        with pytest.raises(MediaTypeRejected, match="allow-list"):
+            manager.check_metadata(
+                size=None, mime_type=None, file_name="chan_5", media_type="MessageMediaPhoto"
+            )
+
+    async def test_a_photo_download_succeeds(
+        self, media: MediaManager, fake_client: FakeTelegramClient, tmp_path: Path
+    ) -> None:
+        fake_client.messages = [FakeMessage(8, "look", media=MessageMediaPhoto())]
+        result = await media.download_message_media("@alex", 8, run_id="run-1")
+        assert result.path.parent == tmp_path / "run-1"
+
+    async def test_a_traversing_peer_cannot_place_a_download_outside_the_run_directory(
+        self, media: MediaManager, fake_client: FakeTelegramClient, tmp_path: Path
+    ) -> None:
+        # Photos carry no filename, so the peer-derived fallback names the file.
+        fake_client.messages = [FakeMessage(9, "look", media=MessageMediaPhoto())]
+        result = await media.download_message_media("../../escape", 9, run_id="run-1")
+        assert result.path.parent == tmp_path / "run-1"
+        assert not (tmp_path.parent / "escape_9").exists()
+
+    def test_cleanup_leaves_a_directory_a_live_run_is_using(
+        self, media: MediaManager, tmp_path: Path
+    ) -> None:
+        # Reaping a run directory between its creation and the download makes
+        # Telethon write into a missing parent.
+        directory = media.run_directory("live-run")
+        media.cleanup()
+        assert directory.exists()
+
     def test_cleanup_removes_only_old_files(self, media: MediaManager, tmp_path: Path) -> None:
         import os
         import time
@@ -388,3 +493,161 @@ class TestMediaValidation:
         assert media.cleanup() == 1
         assert not old.exists()
         assert fresh.exists()
+
+
+class _UnauthorisedClient:
+    """A client that connects but has no session, so login has to prompt."""
+
+    def is_connected(self) -> bool:
+        return True
+
+    async def connect(self) -> None:
+        return None
+
+    async def is_user_authorized(self) -> bool:
+        return False
+
+
+class _LoginManager:
+    """Enough of ``TelegramClientManager`` for the login flow to run offline."""
+
+    def __init__(self, settings: TelegramSettings) -> None:
+        self._settings = settings
+        self._session_path = "/tmp/login-test.session"
+        self._client = _UnauthorisedClient()
+
+    def build(self) -> _UnauthorisedClient:
+        return self._client
+
+    @property
+    def client(self) -> _UnauthorisedClient:
+        return self._client
+
+
+class TestLoginTimeout:
+    @staticmethod
+    def _settings(timeout: float) -> TelegramSettings:
+        return TelegramSettings(api_id=1, api_hash="0" * 32, login_timeout=timeout)
+
+    async def test_an_unanswered_prompt_fails_instead_of_hanging(self) -> None:
+        async def never_answers() -> str:
+            await asyncio.Event().wait()
+            return "unreachable"
+
+        manager = _LoginManager(self._settings(0.05))
+        flow = LoginFlow(
+            manager,  # type: ignore[arg-type]
+            phone=None,
+            request_phone=never_answers,
+        )
+        with pytest.raises(AuthenticationError, match="0.05s"):
+            await asyncio.wait_for(flow.run(), 5)
+
+    async def test_a_prompt_answered_in_time_is_used(self) -> None:
+        async def answers() -> str:
+            return "+15551234567"
+
+        manager = _LoginManager(self._settings(30.0))
+        flow = LoginFlow(
+            manager,  # type: ignore[arg-type]
+            phone=None,
+            request_phone=answers,
+        )
+        # No code prompt is supplied, so the flow gets past the phone step and
+        # then reports the missing one — proving the phone was accepted.
+        with pytest.raises(AuthenticationError, match="login code is required"):
+            await flow.run()
+
+
+class _SearchSlice:
+    """Shaped like ``messages.MessagesSlice`` for a global search."""
+
+    def __init__(self, messages: list[FakeMessage], *, next_rate: int | None = 4242) -> None:
+        self.messages = messages
+        self.count = 500
+        self.next_rate = next_rate
+        self.chats: list[object] = []
+        self.users: list[object] = []
+
+
+class _RecordingGateway:
+    """Captures the arguments a reader sends and replies with a canned slice."""
+
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def call(
+        self,
+        method: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        context: object = None,
+        projector: Callable[[Any], Any] | None = None,
+    ) -> SimpleNamespace:
+        self.calls.append(dict(arguments or {}))
+        payload = projector(self.response) if projector is not None else self.response
+        return SimpleNamespace(payload=payload)
+
+
+class TestGlobalSearchPagination:
+    @staticmethod
+    def _slice(**kwargs: Any) -> _SearchSlice:
+        # Global search spans chats, so ids are not comparable across the page.
+        return _SearchSlice(
+            [
+                FakeMessage(90, "first hit", chat_id=-100111),
+                FakeMessage(4, "second hit", chat_id=-100222),
+            ],
+            **kwargs,
+        )
+
+    async def test_the_cursor_points_past_the_last_row_of_the_slice(self) -> None:
+        gateway = _RecordingGateway(self._slice())
+        page = await HistoryReader(gateway).search_global("x", limit=2)  # type: ignore[arg-type]
+
+        assert page.has_more
+        payload = page.to_dict()
+        assert payload["next_offset_id"] == 4
+        assert payload["next_offset_peer"] == -100222
+        assert payload["next_offset_rate"] == 4242
+
+    async def test_continuing_a_search_sends_the_whole_three_part_cursor(self) -> None:
+        gateway = _RecordingGateway(self._slice())
+        reader = HistoryReader(gateway)  # type: ignore[arg-type]
+        first = await reader.search_global("x", limit=2)
+
+        await reader.search_global(
+            "x",
+            limit=2,
+            offset_id=first.next_offset_id or 0,
+            offset_rate=first.next_offset_rate or 0,
+            offset_peer=first.next_offset_peer,
+        )
+        assert gateway.calls[1]["offset_id"] == 4
+        assert gateway.calls[1]["offset_rate"] == 4242
+        assert gateway.calls[1]["offset_peer"] == -100222
+
+    async def test_a_caller_threading_only_the_offset_id_still_advances(self) -> None:
+        # The tool layer hands the model a single id; the rest of the cursor has
+        # to be recovered or the next page repeats the first one.
+        gateway = _RecordingGateway(self._slice())
+        reader = HistoryReader(gateway)  # type: ignore[arg-type]
+        first = await reader.search_global("x", limit=2)
+
+        await reader.search_global("x", limit=2, offset_id=first.next_offset_id or 0)
+        assert gateway.calls[1]["offset_rate"] == 4242
+        assert gateway.calls[1]["offset_peer"] == -100222
+
+    async def test_no_cursor_is_advertised_when_the_peer_is_unknown(self) -> None:
+        # Without a peer the cursor cannot advance, so promising more would make
+        # a paginating caller loop over the same page forever.
+        slice_without_peers = _SearchSlice(
+            [FakeMessage(90, "hit", chat_id=None), FakeMessage(4, "hit", chat_id=None)]  # type: ignore[arg-type]
+        )
+        gateway = _RecordingGateway(slice_without_peers)
+        page = await HistoryReader(gateway).search_global("x", limit=2)  # type: ignore[arg-type]
+
+        assert not page.has_more
+        assert page.next_offset_id is None
+        assert "next_offset_id" not in page.to_dict()

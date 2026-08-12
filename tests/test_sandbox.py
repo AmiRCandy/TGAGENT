@@ -167,6 +167,16 @@ class TestIsolation:
         result = await runner.execute(ExecutionRequest(code="import tgagent"), _deny)
         assert not result.ok
 
+    async def test_the_programs_own_module_is_not_importable(self, runner: Any) -> None:
+        """The program runs as a registered module; that must not be a way in.
+
+        Registering it in sys.modules is what makes dataclasses and get_type_hints
+        work, so the allow-list has to be what keeps it unreachable.
+        """
+        result = await runner.execute(ExecutionRequest(code="import __agent__"), _deny)
+        assert not result.ok
+        assert "not allowed in the sandbox" in (result.error or "")
+
     async def test_isolation_description_mentions_the_platform_reality(self, runner: Any) -> None:
         description = runner.describe_isolation()
         assert "credential" in description.lower()

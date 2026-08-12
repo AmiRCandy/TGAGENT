@@ -24,6 +24,36 @@ max_outbound_per_run: 3
 `chat_allowlist` is the highest-value control for unattended work: even a fully
 compromised run can only write where you named.
 
+## The short path: `./hermes deploy`
+
+For a personal deployment on the machine you are already sitting at, the
+repository's `hermes` script does the whole thing:
+
+```bash
+./hermes setup       # venv, dependencies, .env
+./hermes login       # interactive, once
+./hermes deploy      # systemd --user service: `tgagent listen --scheduler`
+./hermes logs        # follow it
+./hermes undeploy    # remove the service; session and database untouched
+```
+
+It installs a **user** service rather than a system one, deliberately: the agent
+holds a personal Telegram session, so it belongs to a user account and not to
+root. `deploy` refuses to install a service whose configuration is incomplete,
+because a listener that cannot sign in would only crash-loop against Telegram.
+
+Two things that script cannot decide for you. It enables the control bridge
+(`tgagent listen`), which means chat-initiated runs *do* have a human to ask, so
+read [Telegram control](telegram-control.md) before leaving it running. And user
+services stop when your last session ends unless lingering is on:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Everything below is for the cases the script does not cover: a server you do not
+log into, a shared host, or a container.
+
 ## Docker Compose (recommended)
 
 ```bash
@@ -67,6 +97,9 @@ Environment=TGAGENT_DATA_DIR=/srv/tgagent/data
 Environment=TGAGENT_LOGGING__FORMAT=json
 Environment=TGAGENT_PERMISSIONS__POLICY_FILE=/srv/tgagent/policy.yaml
 EnvironmentFile=/srv/tgagent/.env
+# `serve` runs scheduled tasks only. Append the control bridge with
+# TGAGENT_CONTROL__ENABLED=true, or run `tgagent listen --scheduler` instead —
+# but note that gives anyone who can post in an allowed chat a way to start runs.
 ExecStart=/srv/tgagent/venv/bin/tgagent serve
 Restart=on-failure
 RestartSec=30

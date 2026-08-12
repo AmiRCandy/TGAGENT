@@ -40,8 +40,22 @@ log = get_logger(__name__)
 
 _ACCOUNT_SECURITY_NAMESPACES = frozenset({"auth", "account", "payments", "premium", "smsjobs"})
 
+
+def _table(names: set[str]) -> frozenset[str]:
+    """Freeze a rule table, lowercasing every entry.
+
+    Lookups happen against an already-lowercased name (see :func:`normalise_method`),
+    so a stray capital in a table entry makes that entry unreachable — and an
+    unreachable entry does not fail loudly, it silently drops the method into the
+    unknown-method fallback and misclassifies it. Lowercasing here means the
+    class of typo cannot recur. The fallback itself is untouched: a method that
+    is genuinely in none of the tables is still treated as destructive.
+    """
+    return frozenset(name.lower() for name in names)
+
+
 # fmt: off  (columnar table: packed is far more readable than one item per line)
-_ACCOUNT_SECURITY_METHODS = frozenset(
+_ACCOUNT_SECURITY_METHODS = _table(
     {
         "updatepasswordsettings",
         "getpassword",
@@ -82,7 +96,7 @@ _ACCOUNT_SECURITY_METHODS = frozenset(
 # fmt: on
 
 # fmt: off  (columnar table: packed is far more readable than one item per line)
-_DESTRUCTIVE_METHODS = frozenset(
+_DESTRUCTIVE_METHODS = _table(
     {
         # message / history destruction
         "deletemessages",
@@ -99,7 +113,6 @@ _DESTRUCTIVE_METHODS = frozenset(
         "deletesavedhistory",
         "unpinallmessages",
         "clearrecentstickers",
-        "clearallDrafts",
         "clearalldrafts",
         "deletefolder",
         "deletecontacts",
@@ -128,7 +141,7 @@ _DESTRUCTIVE_METHODS = frozenset(
 # fmt: on
 
 # fmt: off  (columnar table: packed is far more readable than one item per line)
-_EXTERNALLY_VISIBLE_METHODS = frozenset(
+_EXTERNALLY_VISIBLE_METHODS = _table(
     {
         # sending
         "sendmessage",
@@ -163,7 +176,6 @@ _EXTERNALLY_VISIBLE_METHODS = frozenset(
         "joinchannel",
         "importchatinvite",
         "addchatuser",
-        "inviteToChannel",
         "invitetochannel",
         "createchat",
         "createchannel",
@@ -190,7 +202,6 @@ _EXTERNALLY_VISIBLE_METHODS = frozenset(
         "savefilepart",
         "uploadprofilephoto",
         "uploadmedia",
-        "saveBigFilePart",
         "savebigfilepart",
         "createforumtopic",
         "edittopic",
@@ -209,7 +220,7 @@ _EXTERNALLY_VISIBLE_METHODS = frozenset(
 # fmt: on
 
 # fmt: off  (columnar table: packed is far more readable than one item per line)
-_REVERSIBLE_METHODS = frozenset(
+_REVERSIBLE_METHODS = _table(
     {
         "readhistory",
         "readmessagecontents",
@@ -227,7 +238,7 @@ _REVERSIBLE_METHODS = frozenset(
         "updatedialogfilter",
         "updatedialogfiltersorder",
         "togglearchivedfoldersettings",
-        "toggledialogfilterTags",
+        "toggledialogfiltertags",
         "markdialogunread",
         "getdocumentbyhash",
         "downloadfile",
@@ -246,7 +257,7 @@ _REVERSIBLE_METHODS = frozenset(
 # fmt: on
 
 # fmt: off  (columnar table: packed is far more readable than one item per line)
-_READ_ONLY_METHODS = frozenset(
+_READ_ONLY_METHODS = _table(
     {
         "getdialogs",
         "getdialogfilters",
@@ -297,7 +308,6 @@ _READ_ONLY_METHODS = frozenset(
         "getfavedstickers",
         "getdefaulthistoryttl",
         "getallchats",
-        "getgroupsforDiscussion",
         "getgroupsfordiscussion",
         "getinactivechannels",
         "checkusername",
@@ -307,7 +317,6 @@ _READ_ONLY_METHODS = frozenset(
         "resolvephone",
         "getstate",
         "getdifference",
-        "getchannelDifference",
         "getchanneldifference",
         "getconfig",
         "getnearestdc",
@@ -348,6 +357,21 @@ _READ_PREFIXES = ("get", "search", "resolve", "check", "is", "iter", "find", "li
 
 #: Applied to an already-lowercased name, so ``Request`` is matched as ``request``.
 _TL_NAME = re.compile(r"^(?:(?P<ns>[a-z][a-z0-9_]*)\.)?(?P<name>\w+?)(?:request)?$")
+
+#: Separators that only distinguish the friendly spelling from the raw TL one.
+#: See :func:`canonical_method_key`.
+_METHOD_KEY_SEPARATORS = re.compile(r"[_\-\s]+")
+
+#: Public chat links, in the shapes that actually turn up in model output and in
+#: chat text: bare host, either scheme, optional ``www.``, ``telegram.me`` mirrors.
+_TME_LINK = re.compile(r"^(?:https?://)?(?:www\.)?t(?:elegram)?\.(?:me|dog)/(?P<rest>.+)$", re.I)
+
+#: How strict each decision is, for resolving overrides that overlap.
+_DECISION_SEVERITY: dict[PolicyDecision, int] = {
+    PolicyDecision.ALLOW: 0,
+    PolicyDecision.CONFIRM: 1,
+    PolicyDecision.DENY: 2,
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -403,6 +427,28 @@ def normalise_method(method: str) -> tuple[str, str]:
     if match is None:
         return "", cleaned
     return (match.group("ns") or ""), match.group("name")
+
+
+def canonical_method_key(method: str) -> tuple[str, str]:
+    """Reduce a method name to ``(namespace, comparison_key)`` for policy matching.
+
+    :func:`normalise_method` keeps the bare name verbatim because the rule tables
+    list both spellings literally. Policy *overrides* cannot rely on that: an
+    operator writes whichever spelling they know, while the gateway exposes both
+    routes to the same operation, so ``messages.DeleteHistory: deny`` has to
+    govern a call made as ``delete_dialog``'s raw form and ``send_message: deny``
+    has to govern ``messages.SendMessage``. Whichever spelling is not covered is
+    otherwise a free bypass of the override.
+
+    The only thing removed beyond case and the ``Request`` suffix is the
+    separators that *are* the difference between the two spellings — underscores
+    (``send_message`` → ``sendmessage``) and stray hyphens/spaces from
+    hand-written YAML. No letter or digit is dropped, so methods that really are
+    different stay different: ``deletehistory`` and ``deletemessages`` do not
+    collide, and neither do ``block`` and ``blockuser``.
+    """
+    namespace, bare = normalise_method(method)
+    return namespace, _METHOD_KEY_SEPARATORS.sub("", bare)
 
 
 def classify(method: str) -> RiskTier:
@@ -530,27 +576,77 @@ class PermissionEngine:
     # ------------------------------------------------------------ internals --
     def _lookup_decision(self, method: str, risk: RiskTier) -> PolicyDecision:
         overrides = self._settings.method_overrides
-        # Exact match first, then a normalised match so a policy can be written
-        # either as `messages.SendMessage` or `send_message`.
+        namespace, key = canonical_method_key(method)
+
+        # Exact string first, then a canonical match, so a policy can be written
+        # either as `messages.SendMessage` or `send_message` and governs calls
+        # made either way — the gateway routes both spellings to the same
+        # operation, so an override that only caught one of them is bypassable.
         if method in overrides:
-            return overrides[method]
-        _, bare = normalise_method(method)
-        for key, decision in overrides.items():
-            if normalise_method(key)[1] == bare:
-                return decision
-        return self._settings.defaults.get(risk, PolicyDecision.DENY)
+            decision = overrides[method]
+        elif matches := self._overrides_matching(namespace, frozenset({key})):
+            # Overlapping spellings can disagree (`send_message: allow` written
+            # alongside `messages.SendMessage: deny`). Dict iteration order must
+            # not decide a security question, so honour the strictest of them.
+            decision = _strictest(matches)
+        else:
+            decision = self._settings.defaults.get(risk, PolicyDecision.DENY)
+
+        # A friendly wrapper is not always a re-spelling of the raw request it
+        # issues, and no normalisation can bridge `delete_dialog` to
+        # `messages.DeleteHistory`. An override reached through that curated table
+        # may therefore only *tighten* the verdict, never loosen it: the mapping
+        # is hand-written and one friendly call can issue several requests, so it
+        # is allowed to over-restrict but must never over-grant.
+        if aliases := _ALIAS_GROUPS.get(key):
+            if alias_matches := self._overrides_matching(None, aliases):
+                strictest = _strictest(alias_matches)
+                if _DECISION_SEVERITY[strictest] > _DECISION_SEVERITY[decision]:
+                    return strictest
+        return decision
+
+    def _overrides_matching(
+        self, namespace: str | None, keys: frozenset[str]
+    ) -> list[PolicyDecision]:
+        """Decisions of every override whose canonical name is one of *keys*.
+
+        *namespace*, when given, is the calling method's TL namespace. It is only
+        compared when the override carries one too: the friendly spelling has no
+        namespace, so `send_message` must still match `messages.SendMessage`. Two
+        *different* namespaces are two different operations though, and letting
+        `channels.DeleteMessages: allow` leak onto `messages.DeleteMessages` would
+        widen a grant — the one direction of sloppiness that fails open.
+        """
+        matches: list[PolicyDecision] = []
+        for override_method, decision in self._settings.method_overrides.items():
+            override_namespace, override_key = canonical_method_key(override_method)
+            if override_key not in keys:
+                continue
+            if namespace and override_namespace and namespace != override_namespace:
+                continue
+            matches.append(decision)
+        return matches
 
     def _check_chat_lists(self, target: str | None) -> str | None:
         s = self._settings
         if not s.chat_allowlist and not s.chat_denylist:
             return None
         if target is None:
-            if s.chat_allowlist:
+            # Neither list can be evaluated without a target, and neither may be
+            # skipped. A write whose peer argument the engine cannot name — say
+            # `contacts.Block(id="@x")`, where `id` is not a recognised peer
+            # argument — used to walk straight past the denylist, which is the
+            # denylist failing open. Both lists fail closed instead: the operator
+            # asked for writes to be confined, so an unnameable target is a
+            # refusal, not an assumption of safety.
+            if s.chat_denylist:
                 return (
-                    "A chat allowlist is configured but this operation has no "
-                    "identifiable target chat."
+                    "A chat denylist is configured but this operation has no "
+                    "identifiable target chat, so it cannot be checked against it."
                 )
-            return None
+            return (
+                "A chat allowlist is configured but this operation has no identifiable target chat."
+            )
         normalised = _normalise_peer(target)
         if any(_normalise_peer(x) == normalised for x in s.chat_denylist):
             return f"Chat {target!r} is on the denylist."
@@ -566,7 +662,37 @@ class PermissionEngine:
 
 
 def _normalise_peer(peer: str) -> str:
-    return peer.strip().lstrip("@").lower()
+    """Reduce a chat reference to a comparable string.
+
+    Purely local by necessity: authorisation is synchronous, so there is no
+    ``await`` here to spend on resolving a peer through Telegram. What can be done
+    correctly offline is folding away the spellings that provably denote the same
+    reference — surrounding whitespace, case, a leading ``@``, and ``t.me`` links
+    (with or without a scheme), so ``@name``, ``name``, ``t.me/name`` and
+    ``https://t.me/name`` are one entry.
+
+    Residual limitation an operator must know, because it decides how a policy has
+    to be written: this is a string match on *how the call names the chat*, not an
+    identity check. ``chat_denylist: ["@company_announcements"]`` does **not**
+    match a write addressed to the same chat by its numeric id
+    (``-1001234567890``), by an invite link (``t.me/+AbCdEf``), or by a
+    private-channel link (``t.me/c/1234567890/7``); mapping any of those onto a
+    username needs a network round trip this engine cannot make. List a chat under
+    every reference an agent might use — username *and* numeric id — when you need
+    all of them covered. (The ``max_outbound_per_run`` budget and the confirmation
+    prompt, which shows the resolved peer, are the backstops for what slips past.)
+    """
+    cleaned = peer.strip()
+    if match := _TME_LINK.match(cleaned):
+        rest = match.group("rest").split("?", 1)[0].strip("/")
+        # A username link may carry trailing path segments (`t.me/name/42` points
+        # at a message); the first segment is the peer. Invite and private-channel
+        # links are not usernames, so they are compared whole rather than trimmed
+        # into something that could collide with a real username.
+        if not rest.startswith(("+", "joinchat/", "c/")):
+            rest = rest.split("/", 1)[0]
+        cleaned = rest
+    return cleaned.lstrip("@").lower()
 
 
 def _preview_arguments(arguments: dict[str, Any], *, limit: int = 160) -> str:

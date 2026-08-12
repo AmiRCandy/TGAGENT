@@ -152,6 +152,32 @@ See [sandboxing](sandboxing.md) for what each backend guarantees.
 | `scheduler.max_concurrent_tasks` | `2` | |
 | `scheduler.default_timezone` | `UTC` | |
 
+### `control`
+
+Driving the agent from inside Telegram: `agent <instruction>` typed in any chat.
+Off until `tgagent listen` (or `control.enabled` plus `tgagent serve`) runs it.
+The security reasoning behind these defaults is in
+[Telegram control](telegram-control.md) — read it before widening
+`allowed_senders`, which is the one setting here that grants authority.
+
+| Setting | Default | Notes |
+|---|---|---|
+| `control.enabled` | `false` | Start the bridge under `tgagent serve`; `listen` does not need it |
+| `control.trigger` | `agent` | Whole word, start of message, case-insensitive |
+| `control.respond_to_self` | `true` | Your own outgoing messages are commands |
+| `control.allowed_senders` | `[]` | Others who may command — they act as your account |
+| `control.allowed_chats` | `[]` | Non-empty restricts commands to these chats |
+| `control.ignored_chats` | `[]` | Never accept commands here; wins over the allowlist |
+| `control.reply_to_command` | `true` | Answer as a reply, not a loose message |
+| `control.typing_indicator` | `true` | Cosmetic; failures never affect a run |
+| `control.include_reply_context` | `true` | Replied-to message, fenced as untrusted |
+| `control.reply_context_chars` | `2000` | Cap on that context |
+| `control.max_reply_chars` | `3800` | Longer answers are split; Telegram's limit is 4096 |
+| `control.confirm_in_chat` | `true` | Otherwise CONFIRM falls to `non_interactive_decision` |
+| `control.max_concurrent_runs` | `2` | One per chat regardless |
+| `control.conversation_scope` | `chat` | `chat` \| `global` |
+| `control.max_commands_per_minute` | `6` | Loop breaker, not a UX limit |
+
 ### `features`
 
 Coarse switches. A disabled capability is **removed from the tool list** rather

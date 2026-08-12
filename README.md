@@ -92,6 +92,15 @@ Full detail: [security model](docs/security.md) · [threat model](docs/threat-mo
 ## Quick start
 
 ```bash
+./hermes setup                            # venv, dependencies, .env
+./hermes doctor                           # tells you what is still missing
+./hermes login                            # phone → code → 2FA password
+./hermes listen                           # now talk to it from Telegram
+```
+
+Or without the script, if you prefer:
+
+```bash
 pip install "tgagent[anthropic]"          # or [openai], or [all]
 
 cp .env.example .env                      # then fill in the values
@@ -111,6 +120,31 @@ You need two things:
 > The `.session` file created by `tgagent login` is an **authenticated
 > credential**. Anyone holding it can read and send as your account without your
 > phone, password, or 2FA. It is git-ignored; keep it that way.
+
+---
+
+## Talk to it from Telegram
+
+The terminal is a fine place to develop against and a poor place to live. With
+`tgagent listen` running, any chat becomes the prompt — type the trigger word and
+the answer comes back as a reply, on whatever device you happen to be holding:
+
+```
+you    agent summarise what I missed here today
+bot    Three threads moved. Alex needs the migration date by Friday; …
+
+you    agent tell alex I'm running late          (replying to his message)
+bot    ⚠️ Confirmation needed (externally_visible) → messages.SendMessage to @alex
+       Reply yes to allow or no to refuse.
+you    yes
+bot    Sent.
+```
+
+The instruction arrives with its own context — which chat, who sent it, what it
+replied to — so "here", "this", and "them" resolve without you spelling them out.
+Only *your own* messages count as commands; everyone else's text, including a
+message you quote, is fenced as untrusted data rather than obeyed. See
+[Telegram control](docs/telegram-control.md).
 
 ---
 
@@ -138,7 +172,7 @@ in [known limitations](docs/limitations.md).
 
 | | |
 |---|---|
-| **Start here** | [Installation](docs/installation.md) · [Telegram setup](docs/telegram-setup.md) · [Authentication](docs/authentication.md) · [Usage](docs/usage.md) |
+| **Start here** | [Installation](docs/installation.md) · [Telegram setup](docs/telegram-setup.md) · [Authentication](docs/authentication.md) · [Usage](docs/usage.md) · [Telegram control](docs/telegram-control.md) |
 | **Configure** | [Configuration](docs/configuration.md) · [LLM providers](docs/llm-providers.md) · [Permissions](docs/permissions.md) |
 | **Understand** | [Architecture](docs/architecture.md) · [Agent runtime](docs/agent-runtime.md) · [Tool architecture](docs/tool-architecture.md) · [Telegram integration](docs/telegram-integration.md) · [Memory](docs/memory.md) · [Scheduling](docs/scheduling.md) |
 | **Security** | [Security model](docs/security.md) · [Threat model](docs/threat-model.md) · [Prompt injection](docs/prompt-injection.md) · [Sandboxing](docs/sandboxing.md) · [Privacy](docs/privacy.md) |

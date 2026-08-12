@@ -1,0 +1,430 @@
+#!/usr/bin/env bash
+#
+# hermes — one entry point for developing, checking, running and deploying
+#          tgagent. Named for the messenger: it carries things, it does not
+#          decide anything.
+#
+#   ./hermes                 what you can do
+#   ./hermes setup           venv + dependencies + .env
+#   ./hermes login           sign in to Telegram (interactive, once)
+#   ./hermes listen          take instructions from your Telegram chats
+#   ./hermes check           everything CI checks, in CI's order
+#
+# Design rules, so this file stays trustworthy:
+#
+#  * Every command is idempotent. Running it twice is never worse than once.
+#  * Nothing is installed globally. All Python work happens in ./.venv.
+#  * Anything that touches a real account (login, listen, serve, deploy) says
+#    what it is about to do first. Anything destructive asks.
+#  * The checks run in the same order as .github/workflows/ci.yml, so a green
+#    `./hermes check` means a green pipeline — no second-guessing required.
+
+set -euo pipefail
+
+readonly ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly VENV="$ROOT/.venv"
+readonly PY="$VENV/bin/python"
+readonly ENV_FILE="$ROOT/.env"
+readonly SERVICE_NAME="tgagent"
+
+# Minimum interpreter the project supports (pyproject: requires-python >=3.11).
+readonly MIN_PY_MINOR=11
+
+cd "$ROOT"
+
+# ------------------------------------------------------------------ output ----
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  readonly C_RESET=$'\033[0m' C_DIM=$'\033[2m' C_BOLD=$'\033[1m'
+  readonly C_RED=$'\033[31m' C_GREEN=$'\033[32m' C_YELLOW=$'\033[33m' C_CYAN=$'\033[36m'
+else
+  readonly C_RESET='' C_DIM='' C_BOLD='' C_RED='' C_GREEN='' C_YELLOW='' C_CYAN=''
+fi
+
+step() { printf '%s▸ %s%s\n' "$C_CYAN" "$*" "$C_RESET"; }
+ok() { printf '%s✓ %s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
+warn() { printf '%s! %s%s\n' "$C_YELLOW" "$*" "$C_RESET" >&2; }
+die() {
+  printf '%s✗ %s%s\n' "$C_RED" "$*" "$C_RESET" >&2
+  exit 1
+}
+hint() { printf '%s  %s%s\n' "$C_DIM" "$*" "$C_RESET"; }
+
+confirm() {
+  # Default no: a mistyped destructive command must not proceed on Enter.
+  local reply
+  printf '%s%s [y/N] %s' "$C_YELLOW" "$1" "$C_RESET"
+  read -r reply || return 1
+  [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+# ------------------------------------------------------------ prerequisites ----
+find_python() {
+  # Newest supported interpreter wins, so a machine with several gets the best
+  # one rather than whichever `python3` happens to point at.
+  local candidate
+  for candidate in python3.13 python3.12 python3.11 python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 &&
+      "$candidate" -c "import sys; sys.exit(0 if sys.version_info >= (3, $MIN_PY_MINOR) else 1)" 2>/dev/null; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_venv() {
+  [[ -x "$PY" ]] || die "No environment yet. Run: ./hermes setup"
+}
+
+require_env_file() {
+  [[ -f "$ENV_FILE" ]] || die "No .env yet. Run: ./hermes setup"
+}
+
+# `tgagent` is installed into the venv as a console script by `pip install -e`.
+tg() {
+  require_venv
+  "$VENV/bin/tgagent" "$@"
+}
+
+# --------------------------------------------------------------- commands -----
+cmd_setup() {
+  local python
+  python="$(find_python)" || die "Python 3.$MIN_PY_MINOR or newer is required but was not found."
+  step "Using $($python --version)"
+
+  if [[ ! -x "$PY" ]]; then
+    step "Creating $VENV"
+    "$python" -m venv "$VENV"
+  fi
+
+  step "Installing tgagent with development extras"
+  "$PY" -m pip install --quiet --upgrade pip
+  "$PY" -m pip install --quiet -e ".[dev]"
+  ok "Dependencies installed"
+
+  if [[ ! -f "$ENV_FILE" ]]; then
+    cp "$ROOT/.env.example" "$ENV_FILE"
+    # The file will hold an api_hash and a model API key.
+    chmod 600 "$ENV_FILE"
+    ok "Created .env from .env.example"
+    warn "Fill in TGAGENT_TELEGRAM__API_ID, __API_HASH and TGAGENT_LLM__API_KEY before continuing."
+    hint "api_id / api_hash: https://my.telegram.org/apps"
+  else
+    ok ".env already present, left untouched"
+  fi
+
+  printf '\n'
+  ok "Ready."
+  hint "next: ./hermes doctor   then ./hermes login   then ./hermes listen"
+}
+
+cmd_check() {
+  require_venv
+  # Same order as CI: formatting and lint first because they are the fastest
+  # way to a red pipeline, then types, then the suite.
+  step "ruff format --check"
+  "$VENV/bin/ruff" format --check .
+  step "ruff check"
+  "$VENV/bin/ruff" check .
+  step "mypy"
+  "$VENV/bin/mypy"
+  step "pytest"
+  "$PY" -m pytest -q -p no:randomly "$@"
+  step "bandit"
+  "$VENV/bin/bandit" -r src/tgagent -c pyproject.toml -q
+  printf '\n'
+  ok "Everything CI checks passes locally."
+}
+
+cmd_fix() {
+  require_venv
+  step "ruff format"
+  "$VENV/bin/ruff" format .
+  step "ruff check --fix"
+  "$VENV/bin/ruff" check --fix .
+  ok "Formatted and auto-fixed. Re-run ./hermes check."
+}
+
+cmd_test() {
+  require_venv
+  "$PY" -m pytest "$@"
+}
+
+cmd_doctor() {
+  require_venv
+  step "Version"
+  tg version
+  printf '\n'
+  step "Configuration"
+  # `config check` exits non-zero when Telegram credentials are missing, which
+  # is the whole point of running it — report it without aborting the rest.
+  tg config check || warn "Configuration is incomplete (see above)."
+  printf '\n'
+  step "Sandbox isolation"
+  tg sandbox
+  printf '\n'
+  step "Permission policy"
+  tg config policy
+}
+
+cmd_login() {
+  require_venv
+  require_env_file
+  step "Signing in to Telegram"
+  hint "Telegram will send a code to the account's other sessions."
+  hint "The session file it writes is a live credential — it is git-ignored; keep it that way."
+  tg login "$@"
+}
+
+cmd_listen() {
+  require_venv
+  require_env_file
+  step "Listening for commands in your Telegram chats"
+  hint "In any chat, type: agent <instruction>"
+  hint "agent stop · agent reset · agent help"
+  hint "Only your own messages count as commands unless control.allowed_senders says otherwise."
+  tg listen "$@"
+}
+
+cmd_run() {
+  require_venv
+  require_env_file
+  [[ $# -gt 0 ]] || die 'Give it something to do, e.g.: ./hermes run "what did I miss today?"'
+  tg run "$@"
+}
+
+cmd_chat() {
+  require_venv
+  require_env_file
+  tg chat "$@"
+}
+
+cmd_serve() {
+  require_venv
+  require_env_file
+  step "Running the scheduler in the foreground"
+  hint "Scheduled runs are unattended: anything needing confirmation is denied by default."
+  tg serve "$@"
+}
+
+cmd_tasks() {
+  require_venv
+  tg tasks "$@"
+}
+
+cmd_audit() {
+  require_venv
+  tg audit "$@"
+}
+
+# ----------------------------------------------------------------- docker -----
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+  else
+    die "Neither 'docker compose' nor 'docker-compose' is available."
+  fi
+}
+
+cmd_docker() {
+  local action="${1:-up}"
+  shift || true
+  require_env_file
+
+  case "$action" in
+  build) compose build "$@" ;;
+  up)
+    step "Starting the container detached"
+    compose up -d --build "$@"
+    compose ps
+    hint "logs: ./hermes docker logs"
+    ;;
+  down) compose down "$@" ;;
+  logs) compose logs -f --tail=100 "$@" ;;
+  ps) compose ps "$@" ;;
+  login)
+    # Signing in needs a code typed at a terminal, so it cannot happen in a
+    # detached container — this is the documented one-time interactive step.
+    step "Interactive login inside a throwaway container"
+    compose run --rm tgagent login
+    ;;
+  *) die "Unknown docker action '$action'. Try: build up down logs ps login" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- systemd -----
+# A user service, not a system one: the agent holds a personal Telegram session,
+# so it belongs to a user account and not to root.
+readonly UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+readonly UNIT_PATH="$UNIT_DIR/$SERVICE_NAME.service"
+
+require_systemd() {
+  command -v systemctl >/dev/null 2>&1 || die "systemd is not available on this machine."
+}
+
+write_unit() {
+  mkdir -p "$UNIT_DIR"
+  cat >"$UNIT_PATH" <<UNIT
+[Unit]
+Description=tgagent — Telegram agent (control bridge + scheduler)
+Documentation=file://$ROOT/docs/telegram-control.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+ExecStart=$VENV/bin/tgagent listen --scheduler
+# The session file and database are credentials; keep the log free of chat text.
+Environment=TGAGENT_LOGGING__FORMAT=json
+Restart=on-failure
+RestartSec=10
+# Telegram rate-limits an account that reconnects in a tight loop.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# The process needs its data directory and nothing else on the filesystem.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/tgagent
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target
+UNIT
+}
+
+cmd_deploy() {
+  require_venv
+  require_env_file
+  require_systemd
+
+  # Deploying a listener that cannot sign in would just crash-loop against
+  # Telegram, which is exactly the thing StartLimitBurst is there to survive —
+  # better to refuse up front.
+  if ! tg config check >/dev/null 2>&1; then
+    tg config check || true
+    die "Configuration is incomplete. Fix .env, then run ./hermes deploy again."
+  fi
+
+  step "Installing the user service at $UNIT_PATH"
+  write_unit
+  systemctl --user daemon-reload
+  systemctl --user enable "$SERVICE_NAME.service"
+  systemctl --user restart "$SERVICE_NAME.service"
+
+  # Without this, the service stops when the last session for the user ends.
+  if ! loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -q 'Linger=yes'; then
+    warn "Lingering is off, so the service will stop when you log out."
+    hint "enable it with: sudo loginctl enable-linger $USER"
+  fi
+
+  printf '\n'
+  ok "Deployed. It will start again on boot and restart on failure."
+  hint "status: ./hermes status   ·   logs: ./hermes logs   ·   stop: ./hermes undeploy"
+  printf '\n'
+  systemctl --user --no-pager --lines=0 status "$SERVICE_NAME.service" || true
+}
+
+cmd_undeploy() {
+  require_systemd
+  confirm "Stop and remove the $SERVICE_NAME user service?" || {
+    warn "Left alone."
+    return 0
+  }
+  systemctl --user disable --now "$SERVICE_NAME.service" 2>/dev/null || true
+  rm -f "$UNIT_PATH"
+  systemctl --user daemon-reload
+  ok "Service removed. Your session file and database were not touched."
+}
+
+cmd_status() {
+  require_systemd
+  systemctl --user --no-pager status "$SERVICE_NAME.service" || true
+}
+
+cmd_logs() {
+  require_systemd
+  journalctl --user -u "$SERVICE_NAME.service" -f -n "${1:-100}"
+}
+
+cmd_restart() {
+  require_systemd
+  systemctl --user restart "$SERVICE_NAME.service"
+  ok "Restarted."
+}
+
+# ------------------------------------------------------------------- help -----
+cmd_help() {
+  cat <<HELP
+${C_BOLD}hermes${C_RESET} — carry tgagent from a clean checkout to a running deployment.
+
+${C_BOLD}Getting started${C_RESET}
+  setup              Create ./.venv, install dependencies, seed .env
+  doctor             Report what is configured, what is not, and what the sandbox isolates
+  login              Sign in to Telegram (interactive, needed once)
+
+${C_BOLD}Using it${C_RESET}
+  listen             Take instructions from your Telegram chats: type '${C_BOLD}agent <instruction>${C_RESET}' in any chat
+  run "<prompt>"     One request from the terminal, then exit
+  chat               Interactive terminal session
+  serve              Run scheduled tasks in the foreground
+  tasks ...          Manage scheduled tasks (list | add | remove | run)
+  audit              Show recent security-relevant operations
+
+${C_BOLD}Developing${C_RESET}
+  check [pytest…]    Everything CI checks: format, lint, types, tests, bandit
+  fix                Apply formatting and auto-fixable lint
+  test [pytest…]     Run the suite with your own arguments
+
+${C_BOLD}Deploying${C_RESET}
+  deploy             Install + start a systemd --user service (listen + scheduler)
+  status | logs      Inspect the deployed service
+  restart | undeploy Restart it, or remove it
+  docker <action>    build | up | down | logs | ps | login
+
+${C_DIM}Once deployed, you never need this terminal again: talk to it from Telegram.${C_RESET}
+HELP
+}
+
+# ------------------------------------------------------------------- main -----
+main() {
+  local command="${1:-help}"
+  shift || true
+
+  case "$command" in
+  setup) cmd_setup "$@" ;;
+  check) cmd_check "$@" ;;
+  fix) cmd_fix "$@" ;;
+  test) cmd_test "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  login) cmd_login "$@" ;;
+  listen) cmd_listen "$@" ;;
+  run) cmd_run "$@" ;;
+  chat) cmd_chat "$@" ;;
+  serve) cmd_serve "$@" ;;
+  tasks) cmd_tasks "$@" ;;
+  audit) cmd_audit "$@" ;;
+  docker) cmd_docker "$@" ;;
+  deploy) cmd_deploy "$@" ;;
+  undeploy) cmd_undeploy "$@" ;;
+  status) cmd_status "$@" ;;
+  logs) cmd_logs "$@" ;;
+  restart) cmd_restart "$@" ;;
+  help | -h | --help) cmd_help ;;
+  *)
+    printf '%sUnknown command: %s%s\n\n' "$C_RED" "$command" "$C_RESET" >&2
+    cmd_help
+    exit 2
+    ;;
+  esac
+}
+
+main "$@"

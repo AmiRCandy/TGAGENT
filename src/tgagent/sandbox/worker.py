@@ -37,6 +37,7 @@ import linecache
 import os
 import sys
 import traceback
+import types
 from typing import Any
 
 PROTOCOL_VERSION = 1
@@ -254,6 +255,11 @@ _REMOVED_BUILTINS = frozenset(
 # fmt: on
 
 
+#: Module name the generated program runs under. Named so it is recognisable in
+#: a traceback and cannot collide with anything importable.
+_PROGRAM_MODULE = "__agent__"
+
+
 #: Dunder builtins the language itself needs, re-added after the ``_`` filter.
 #:
 #: A ``class`` statement compiles to a call to ``__build_class__``, so without it
@@ -340,14 +346,27 @@ def main() -> int:
     _neutralise_dangerous_modules()
 
     capture = _CappedWriter(limit=200_000)
-    program_globals: dict[str, Any] = {
-        "__name__": "__agent__",
-        "__builtins__": _restricted_builtins(allowed),
-        "tg": TelegramProxy(),
-        "RpcError": RpcError,
-        "PermissionDeniedError": PermissionDeniedError,
-        "result": None,
-    }
+    # The program runs as a real module registered in sys.modules, not as a bare
+    # globals dict. Several standard-library facilities look a class's module up
+    # by name and assume it is there: dataclasses (allowed by default) does
+    # `sys.modules.get(cls.__module__).__dict__` without a guard, so `@dataclass`
+    # on generated code failed with "'NoneType' object has no attribute
+    # '__dict__'" — pointing at the decorator, with nothing to suggest why.
+    # typing.get_type_hints and inspect make the same assumption. It grants
+    # nothing: `__agent__` is not on the import allow-list, so generated code
+    # cannot import it, and if it could it would get its own globals back.
+    program_module = types.ModuleType(_PROGRAM_MODULE)
+    program_globals: dict[str, Any] = program_module.__dict__
+    program_globals.update(
+        {
+            "__builtins__": _restricted_builtins(allowed),
+            "tg": TelegramProxy(),
+            "RpcError": RpcError,
+            "PermissionDeniedError": PermissionDeniedError,
+            "result": None,
+        }
+    )
+    sys.modules[_PROGRAM_MODULE] = program_module
 
     ok = True
     error: str | None = None

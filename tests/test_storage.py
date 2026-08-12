@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -42,6 +43,33 @@ class TestLifecycle:
         with pytest.raises(MigrationError, match="newer than this build"):
             async with SQLiteStorage(path):
                 pass
+
+    async def test_a_refused_migration_leaves_no_open_connection(self, tmp_path: Path) -> None:
+        """A failed connect() must not leak the connection it had already opened.
+
+        aiosqlite runs each connection on its own *non-daemon* thread, so a leaked
+        one keeps the interpreter alive at shutdown: `tgagent` would print the
+        migration error and then hang forever instead of exiting. `__aexit__` is
+        no help either, because `__aenter__` is what raised.
+        """
+        path = tmp_path / "db.sqlite"
+        async with SQLiteStorage(path) as store:
+            await store.execute(f"PRAGMA user_version={SCHEMA_VERSION + 5}")
+
+        threads_before = threading.active_count()
+        store = SQLiteStorage(path)
+        with pytest.raises(MigrationError):
+            await store.connect()
+
+        assert store._db is None
+        with pytest.raises(StorageError, match="not connected"):
+            _ = store.db
+        # Give the connection thread a moment to notice it was closed.
+        for _ in range(50):
+            if threading.active_count() <= threads_before:
+                break
+            await asyncio.sleep(0.01)
+        assert threading.active_count() <= threads_before
 
     async def test_using_before_connect_is_a_clear_error(self, tmp_path: Path) -> None:
         store = SQLiteStorage(tmp_path / "db.sqlite")

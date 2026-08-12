@@ -62,7 +62,15 @@
       "Bash(.venv/bin/python -c ' *)",
       "Bash(echo \"bandit=$?\")",
       "Bash(.venv/bin/python -c \"print\\(0 in \\(None, False\\), 0.0 in \\(None,False\\)\\)\")",
-      "Bash(.venv/bin/pytest tests/test_sandbox.py -q -p no:randomly)"
+      "Bash(.venv/bin/pytest tests/test_sandbox.py -q -p no:randomly)",
+      "Bash(grep -n \"sys.modules\\\\|__dict__\" /usr/lib/python3.14/dataclasses.py | head -20)",
+      "Read(//usr/lib/python3.14/**)",
+      "Bash(.venv/bin/pytest tests/test_storage.py -q -p no:randomly)",
+      "Bash(bash -n hermes)",
+      "Bash(./hermes bogus *)",
+      "Bash(./hermes test *)",
+      "Bash(.venv/bin/python -V)",
+      "Bash(.venv/bin/python -c \"print\\('ok'\\)\")"
     ]
   }
 }
