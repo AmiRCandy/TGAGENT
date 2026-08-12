@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tgagent.config.settings import LLMSettings
-from tgagent.errors import LLMConfigError, LLMError, LLMTransientError
+from tgagent.errors import ConfigError, LLMConfigError, LLMError, LLMTransientError
 from tgagent.llm.base import (
     Message,
     Role,
@@ -231,3 +231,98 @@ class TestFakeProvider:
         provider = FakeProvider([multi_tool_completion([("a", {}), ("b", {})])])
         completion = await provider.complete(system="", messages=[])
         assert [c.name for c in completion.tool_calls] == ["a", "b"]
+
+
+class TestErrorClassification:
+    """A configuration mistake must not look like a flaky network.
+
+    The distinction is load-bearing in two places: `retry_async` only retries
+    transient failures, and `AgentRuntime` only catches `LLMError` around a model
+    call. An error on the wrong side of either line is either retried pointlessly
+    or escapes the run loop entirely.
+    """
+
+    def test_a_config_error_is_also_an_llm_error(self) -> None:
+        """Otherwise the agent loop's `except LLMError` never sees it.
+
+        `LLMConfigError` used to derive from `ConfigError` alone, so a wrong API
+        key or an unavailable model raised straight out of `AgentRuntime.run()`:
+        no RunResult, no ERROR event, no RUN_FINISHED, and a UI waiting forever.
+        """
+        assert issubclass(LLMConfigError, LLMError)
+        assert issubclass(LLMConfigError, ConfigError)
+        assert not issubclass(LLMConfigError, LLMTransientError)
+
+    def _provider(self) -> object:
+        pytest.importorskip("openai")
+        from tgagent.llm.providers.openai_provider import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(
+            LLMSettings(
+                provider="openai-compatible",
+                model="kimi-k3",
+                base_url="https://gateway.example/v1",
+                api_key="sk-secret-value",
+            )
+        )
+
+    def _status_error(self, status: int, body: object) -> Exception:
+        pytest.importorskip("openai")
+        import httpx
+        import openai
+
+        request = httpx.Request("POST", "https://gateway.example/v1/chat/completions")
+        response = httpx.Response(status, request=request, json=body)
+        return openai.APIStatusError("boom", response=response, body=body)
+
+    def test_an_unavailable_model_names_the_model_we_asked_for(self) -> None:
+        """The gateway cannot echo back a name it failed to resolve; we can."""
+        error = self._provider()._translate_error(
+            self._status_error(
+                404,
+                {
+                    "error": {
+                        "message": "Model 'N/A' not found. Check https://ava.al/models",
+                        "code": "model_not_found",
+                        "param": "model",
+                    }
+                },
+            )
+        )
+        assert isinstance(error, LLMConfigError)
+        assert "kimi-k3" in str(error)
+        assert "TGAGENT_LLM__MODEL" in str(error)
+        # The provider's own text is kept — it carries the catalogue link.
+        assert "ava.al/models" in str(error)
+
+    def test_a_404_that_is_not_about_the_model_blames_the_base_url(self) -> None:
+        error = self._provider()._translate_error(
+            self._status_error(404, {"error": {"message": "Not Found", "code": "not_found"}})
+        )
+        assert isinstance(error, LLMConfigError)
+        assert "TGAGENT_LLM__BASE_URL" in str(error)
+        assert "/v1" in str(error)
+
+    def test_a_404_with_an_unparseable_body_still_classifies(self) -> None:
+        """A gateway may answer with anything at all; the handler must not raise."""
+        provider = self._provider()
+        for body in ("plain string", [1, 2, 3], None, {"error": "flat"}):
+            error = provider._translate_error(self._status_error(404, body))
+            assert isinstance(error, LLMConfigError), body
+
+    def test_the_api_key_never_appears_in_an_error(self) -> None:
+        """These messages reach logs and, via the control bridge, a Telegram chat."""
+        error = self._provider()._translate_error(
+            self._status_error(404, {"error": {"message": "no", "code": "model_not_found"}})
+        )
+        assert "sk-secret-value" not in str(error)
+
+    def test_a_server_error_is_still_transient(self) -> None:
+        error = self._provider()._translate_error(
+            self._status_error(503, {"error": {"message": "overloaded"}})
+        )
+        assert isinstance(error, LLMTransientError)
+
+    def test_an_already_translated_error_passes_through(self) -> None:
+        original = LLMConfigError("already classified")
+        assert self._provider()._translate_error(original) is original

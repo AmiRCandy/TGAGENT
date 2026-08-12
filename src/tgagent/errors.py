@@ -148,8 +148,24 @@ class LLMError(TgAgentError):
     user_message = "The language model request failed."
 
 
-class LLMConfigError(ConfigError):
-    """The requested provider is unknown or is missing credentials."""
+class LLMConfigError(ConfigError, LLMError):
+    """The provider is unknown, misconfigured, or was asked for something it lacks.
+
+    Deliberately *both* a ``ConfigError`` and an ``LLMError``, because it is
+    genuinely both and each base is load-bearing somewhere:
+
+    * ``ConfigError`` is how the CLI and the composition root recognise "the
+      operator has to change something", as distinct from a transient failure.
+    * ``LLMError`` is what the agent loop catches around a model call. Inheriting
+      from ``ConfigError`` alone meant a wrong API key or an unavailable model
+      escaped that handler entirely: :meth:`AgentRuntime.run` raised instead of
+      returning a ``RunResult``, so the user's turn was persisted with no
+      assistant turn, no ``ERROR`` event was emitted, and any interface waiting
+      for ``RUN_FINISHED`` — the CLI renderer, the Telegram bridge's typing
+      indicator — waited forever.
+
+    Not retryable; see :class:`LLMTransientError` for the ones that are.
+    """
 
     user_message = "LLM provider is not configured correctly."
 

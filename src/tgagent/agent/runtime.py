@@ -31,6 +31,7 @@ from tgagent.agent.events import AgentEvent, EventKind, RunResult
 from tgagent.agent.prompts import COMPACTION_PROMPT, build_system_prompt
 from tgagent.config.settings import Settings
 from tgagent.errors import (
+    LLMConfigError,
     LLMError,
     OperationCancelled,
     PermissionDenied,
@@ -234,11 +235,23 @@ class AgentRuntime:
                 break
             except LLMError as exc:
                 errors.append(str(exc))
-                stopped_because = "llm_error"
-                answer = (
-                    f"I could not reach the language model: {exc.user_message} "
-                    f"Nothing was changed on your Telegram account by this failure."
-                )
+                # A misconfiguration and an unreachable provider need different
+                # things from whoever reads this: one means "change a setting",
+                # the other means "try again later". Reporting both as "could not
+                # reach" sends someone hunting a network fault they do not have.
+                if isinstance(exc, LLMConfigError):
+                    stopped_because = "llm_config_error"
+                    answer = (
+                        f"The language model is not configured correctly, so I could "
+                        f"not start: {exc}\n\nRunning this again will not help until "
+                        f"that is fixed. Nothing was changed on your Telegram account."
+                    )
+                else:
+                    stopped_because = "llm_error"
+                    answer = (
+                        f"I could not reach the language model: {exc.user_message} "
+                        f"Nothing was changed on your Telegram account by this failure."
+                    )
                 await emit(AgentEvent.make(EventKind.ERROR, answer))
                 break
 

@@ -34,6 +34,7 @@ from tgagent.llm.base import (
 from tgagent.llm.retry import retry_async
 from tgagent.llm.tokens import estimate_text_tokens
 from tgagent.observability.logging import get_logger
+from tgagent.observability.redaction import redact_text
 
 log = get_logger(__name__)
 
@@ -300,8 +301,67 @@ class OpenAICompatibleProvider:
                 return LLMConfigError(
                     "The provider rejected the API key. Set TGAGENT_LLM__API_KEY."
                 )
+            if exc.status_code == 404:
+                return self._explain_not_found(exc)
             return LLMError(f"Request rejected ({exc.status_code}): {exc}")
         return LLMError(f"Request failed: {exc}")
+
+    def _explain_not_found(self, exc: Any) -> LLMConfigError:
+        """Turn a 404 into something the operator can act on.
+
+        A 404 is never retryable and never the model's fault: the endpoint does
+        not have what was asked for. What makes it hard to diagnose is that the
+        provider's message describes *its* view — gateways commonly cannot echo
+        back a model name they failed to resolve, so the operator reads
+        ``Model 'N/A' not found`` and has nothing connecting it to their own
+        configuration. Naming the model *we* asked for, and where we asked, is
+        the whole fix.
+        """
+        detail = _error_field(exc, "message")
+        code = _error_field(exc, "code")
+        param = _error_field(exc, "param")
+        where = f" (base_url: {self._safe_base_url()})" if self._settings.base_url else ""
+        # The provider's own text is kept: it often carries the useful part — a
+        # link to its model catalogue, or a request id to quote to their support.
+        said = f" The provider said: {detail[:400]}" if detail else ""
+
+        if code == "model_not_found" or param == "model" or "model" in detail.lower():
+            return LLMConfigError(
+                f"The endpoint does not serve the model {self.model!r}{where}. Set "
+                f"TGAGENT_LLM__MODEL to one it does.{said}"
+            )
+        return LLMConfigError(
+            f"The endpoint returned 404 for {self.model!r}{where}. Either it does not "
+            f"serve that model, or TGAGENT_LLM__BASE_URL is wrong — for an "
+            f"OpenAI-compatible gateway it usually has to end in `/v1`.{said}"
+        )
+
+    def _safe_base_url(self) -> str:
+        """The endpoint, with any known secret removed.
+
+        Some gateways carry a token in the URL itself, and this string reaches an
+        error message, a log line, and — through the control bridge — a Telegram
+        chat. ``redact_text`` knows the secrets this process holds, the model API
+        key among them, so it strips exactly those.
+        """
+        return redact_text(str(self._settings.base_url or ""))
+
+
+def _error_field(exc: Any, name: str) -> str:
+    """Read one field from an OpenAI-shaped error body, tolerating any shape.
+
+    The body is whatever a third-party gateway chose to send, so every access is
+    defensive: a provider answering with a bare string, a list, or nothing at all
+    must not turn a useful 404 into an ``AttributeError`` raised from inside the
+    error handler itself.
+    """
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return ""
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return str(body.get(name) or "")
+    return str(error.get(name) or "")
 
 
 def _usage_from(usage: Any) -> Usage:

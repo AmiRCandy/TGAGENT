@@ -9,7 +9,7 @@ from tests.fakes import CollectingEvents
 from tgagent.agent.events import EventKind
 from tgagent.agent.runtime import AgentRuntime, RuntimeDependencies, _drop_dangling_tool_calls
 from tgagent.config.settings import Settings
-from tgagent.errors import LLMError, ToolInputError
+from tgagent.errors import LLMConfigError, LLMError, ToolInputError
 from tgagent.llm.base import Message, Role, ToolCallPart, ToolResultPart
 from tgagent.llm.providers.fake import (
     FailingProvider,
@@ -239,6 +239,40 @@ class TestErrorHandling:
         broken = BrokenTool(ToolInputError("the 'peer' argument is required."))
         result = await build_runtime(provider, settings, [broken]).run("go")
         assert result.answer == "noted"
+
+    async def test_a_provider_misconfiguration_ends_the_run_cleanly(
+        self, settings: Settings
+    ) -> None:
+        """A wrong key or an unavailable model must not escape the run loop.
+
+        `LLMConfigError` derives from `ConfigError`, and used to derive from that
+        alone — so it slipped past `except LLMError` and `run()` raised instead of
+        returning a RunResult. The user's turn was persisted with no assistant
+        turn, no ERROR event was emitted, and anything waiting on RUN_FINISHED
+        (the CLI renderer, the Telegram bridge's typing indicator) hung.
+        """
+        provider = FailingProvider(LLMConfigError("model 'nope' is not served here"))
+        events = CollectingEvents()
+        runtime = AgentRuntime(provider, ToolRegistry(), settings, RuntimeDependencies())  # type: ignore[arg-type]
+
+        result = await runtime.run("go", on_event=events)
+
+        assert result.stopped_because == "llm_config_error"
+        assert "not configured correctly" in result.answer.lower()
+        assert "nope" in result.answer
+        # Retrying cannot help, and the answer has to say so.
+        assert "will not help" in result.answer.lower()
+        assert "nothing was changed" in result.answer.lower()
+        # The observable contract: both events fire, so no interface is left waiting.
+        assert EventKind.ERROR.value in events.kinds()
+        assert EventKind.RUN_FINISHED.value in events.kinds()
+
+    async def test_a_misconfiguration_is_not_retried(self, settings: Settings) -> None:
+        """Only transient failures are worth a second attempt."""
+        provider = FailingProvider(LLMConfigError("bad key"))
+        runtime = AgentRuntime(provider, ToolRegistry(), settings, RuntimeDependencies())  # type: ignore[arg-type]
+        await runtime.run("go")
+        assert provider.calls == 1
 
     async def test_llm_failure_ends_the_run_cleanly(self, settings: Settings) -> None:
         provider = FailingProvider(LLMError("provider exploded"))

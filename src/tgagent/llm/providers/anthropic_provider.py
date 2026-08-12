@@ -300,6 +300,14 @@ class AnthropicProvider:
                     "Anthropic rejected the credentials. Set TGAGENT_LLM__API_KEY "
                     "or ANTHROPIC_API_KEY."
                 )
+            if exc.status_code == 404:
+                # Anthropic answers an unknown model with 404 `not_found_error`.
+                # That is a configuration mistake rather than a failure to reach
+                # anything, and naming the model is what makes it fixable.
+                return LLMConfigError(
+                    f"Anthropic does not serve the model {self.model!r}. Set "
+                    f"TGAGENT_LLM__MODEL to a current model id. It said: {exc}"
+                )
             return LLMError(f"Anthropic request rejected ({exc.status_code}): {exc}")
         return LLMError(f"Anthropic request failed: {exc}")
 
