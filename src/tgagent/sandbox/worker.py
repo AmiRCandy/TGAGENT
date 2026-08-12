@@ -245,11 +245,24 @@ _REMOVED_BUILTINS = frozenset(
         "memoryview",
         "globals",
         "vars",
+        # Belt and braces: the `_`-prefix filter in _restricted_builtins already
+        # excludes every dunder, so these two are listed for the reader's benefit.
         "__loader__",
         "__spec__",
     }
 )
 # fmt: on
+
+
+#: Dunder builtins the language itself needs, re-added after the ``_`` filter.
+#:
+#: A ``class`` statement compiles to a call to ``__build_class__``, so without it
+#: *no* class definition works — including ``@dataclass``, whose module is on the
+#: default ``allowed_imports`` list. The failure is a bare
+#: ``NameError: __build_class__ not found`` at the class statement, which is an
+#: extremely confusing way to discover that. It grants nothing new: ``type`` is
+#: already available, and three-argument ``type()`` builds the same classes.
+_REQUIRED_DUNDERS = ("__build_class__",)
 
 
 def _restricted_builtins(allowed_imports: set[str]) -> dict[str, Any]:
@@ -258,6 +271,8 @@ def _restricted_builtins(allowed_imports: set[str]) -> dict[str, Any]:
         for name in dir(builtins)
         if not name.startswith("_") and name not in _REMOVED_BUILTINS
     }
+    for name in _REQUIRED_DUNDERS:
+        safe[name] = getattr(builtins, name)
     safe["__import__"] = _build_import_hook(allowed_imports)
     safe["__name__"] = "builtins"
     return safe

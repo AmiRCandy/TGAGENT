@@ -84,16 +84,24 @@ class GatewayBridge:
         return result.payload
 
     def _note_scan(self, method: str, scan: ScanResult) -> None:
-        if scan.score <= self.stats.max_suspicion:
+        """Record one call's injection scan.
+
+        The running maximum and the list of flagged sources are tracked
+        independently on purpose. Gating the recording on "did this beat the
+        previous high score?" loses every flagged call after the first: a program
+        that reads two injected chats would report only the higher-scoring one to
+        the model and to the audit log, so the second attempt goes unmentioned in
+        the very warning that exists to mention it.
+        """
+        self.stats.max_suspicion = max(self.stats.max_suspicion, scan.score)
+        if not scan.flagged:
             return
-        self.stats.max_suspicion = scan.score
-        if scan.flagged:
-            note = f"{method}: {scan.describe()}"
-            if note not in self.stats.suspicion_sources:
-                self.stats.suspicion_sources.append(note)
-            log.warning(
-                "sandbox.suspicious_content",
-                method=method,
-                score=scan.score,
-                matches=list(scan.matches),
-            )
+        note = f"{method}: {scan.describe()}"
+        if note not in self.stats.suspicion_sources:
+            self.stats.suspicion_sources.append(note)
+        log.warning(
+            "sandbox.suspicious_content",
+            method=method,
+            score=scan.score,
+            matches=list(scan.matches),
+        )

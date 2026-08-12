@@ -118,7 +118,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "T20", "PTH", "ASYNC"]
+# Tests are allowed to reach into internals: asserting on the state a unit
+# actually keeps is often the only way to pin a behaviour that has no public
+# read-back, and a test that can only see the public surface is a test that
+# cannot catch a regression in the private one.
+"tests/**" = ["S", "T20", "PTH", "ASYNC", "SLF"]
 "src/tgagent/interfaces/cli.py" = ["T20"]
 "src/tgagent/sandbox/worker.py" = ["T20"]  # the worker speaks JSON-lines on stdout
 

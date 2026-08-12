@@ -161,6 +161,20 @@ class Application:
     ) -> None:
         await self.stop()
 
+    def use_confirmations(self, provider: ConfirmationProvider) -> None:
+        """Choose who answers CONFIRM decisions.
+
+        Only valid before :meth:`start`. The gateway captures the provider when
+        Telegram connects, so a later swap would look like it worked and quietly
+        leave the old provider in charge — which for a security control is the
+        worst kind of no-op. Interfaces whose provider needs the running loop (the
+        Telegram control bridge answers in a chat, and so must exist before the
+        gateway does) construct it and hand it over here.
+        """
+        if self._started:
+            raise ConfigError("Confirmations must be chosen before the application starts.")
+        self.confirmations = provider
+
     # -------------------------------------------------------------- access ---
     @property
     def provider(self) -> LLMProvider:

@@ -16,8 +16,8 @@ Layer 3 is the load-bearing one, so the strongest assertions here are about it.
 from __future__ import annotations
 
 import pytest
-from tests.fakes import FakeClientManager, RecordingConfirmation
 
+from tests.fakes import FakeClientManager, RecordingConfirmation
 from tgagent.config.settings import PermissionSettings, Settings
 from tgagent.errors import PermissionDenied
 from tgagent.risk import PolicyDecision

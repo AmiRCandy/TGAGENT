@@ -27,6 +27,7 @@ from tgagent.agent.events import AgentEvent, EventKind
 from tgagent.app import Application
 from tgagent.config.settings import Settings, load_settings
 from tgagent.errors import TgAgentError
+from tgagent.interfaces.telegram_control import TelegramControlBridge
 from tgagent.risk import RiskTier
 from tgagent.security.confirm import (
     AutoApproveConfirmation,
@@ -348,32 +349,125 @@ def chat(
 
 
 @app.command()
+def listen(
+    trigger: Annotated[
+        str | None, typer.Option("--trigger", help="Override the trigger word.")
+    ] = None,
+    scheduler: Annotated[
+        bool, typer.Option("--scheduler", help="Also run scheduled tasks.")
+    ] = False,
+) -> None:
+    """Take instructions from your Telegram chats instead of this terminal.
+
+    In any chat, type `agent <instruction>`. The agent gets the instruction plus
+    the chat it was typed in, and answers as a reply there. Confirmations are
+    asked in the same chat: reply `yes` or `no`.
+
+    Only your own outgoing messages count as commands unless
+    `control.allowed_senders` says otherwise. See docs/telegram-control.md.
+    """
+
+    async def main() -> None:
+        settings = load_settings()
+        if trigger:
+            settings.control.trigger = trigger
+
+        application = Application(settings)
+        # The bridge is built before start() because its confirmation provider has
+        # to be the one the gateway captures when Telegram connects.
+        bridge = TelegramControlBridge(
+            application.telegram,
+            application.build_runtime,
+            settings.control,
+            audit=application.storage.audit,
+            confirmation_timeout=settings.permissions.confirmation_timeout,
+            log_arguments=settings.logging.log_call_arguments,
+        )
+        application.use_confirmations(bridge.confirmations)
+
+        try:
+            await application.start(connect_telegram=True, start_scheduler=scheduler)
+            await bridge.start()
+            account = application.account or {}
+            console.print(
+                Panel(
+                    f"Listening as {account.get('username') or account.get('id')}.\n"
+                    f"Type [bold]{settings.control.trigger} <instruction>[/bold] in any chat.\n"
+                    f"[dim]{settings.control.trigger} stop · "
+                    f"{settings.control.trigger} reset · "
+                    f"{settings.control.trigger} help[/dim]\n\n"
+                    f"Commands are accepted from: "
+                    f"{'your own messages' if settings.control.respond_to_self else 'nobody'}"
+                    + (
+                        f", {', '.join(settings.control.allowed_senders)}"
+                        if settings.control.allowed_senders
+                        else ""
+                    )
+                    + "\nPress Ctrl-C to stop.",
+                    title="Telegram control",
+                    border_style="cyan",
+                )
+            )
+            with contextlib.suppress(KeyboardInterrupt):
+                await bridge.wait_closed()
+        finally:
+            console.print("[dim]Shutting down…[/dim]")
+            await bridge.stop()
+            await application.stop()
+
+    _run(main())
+
+
+@app.command()
 def serve(
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Run the scheduler in the foreground until interrupted.
 
     Scheduled runs are unattended: anything needing confirmation is decided by
-    `permissions.non_interactive_decision` (deny, by default).
+    `permissions.non_interactive_decision` (deny, by default). If
+    `control.enabled` is set, the Telegram control bridge runs alongside it, and
+    chat-initiated runs *do* have someone to ask.
     """
 
     async def main() -> None:
         settings = load_settings()
         application = Application(settings)
+        bridge: TelegramControlBridge | None = None
+        if settings.control.enabled:
+            bridge = TelegramControlBridge(
+                application.telegram,
+                application.build_runtime,
+                settings.control,
+                audit=application.storage.audit,
+                confirmation_timeout=settings.permissions.confirmation_timeout,
+                log_arguments=settings.logging.log_call_arguments,
+            )
+            application.use_confirmations(bridge.confirmations)
+
         stop = asyncio.Event()
         try:
             await application.start(connect_telegram=True, start_scheduler=True)
+            if bridge is not None:
+                await bridge.start()
             enabled = await application.storage.tasks.list_all(enabled_only=True)
             console.print(
                 f"[green]Scheduler running[/green] with {len(enabled)} enabled task(s). "
                 f"Press Ctrl-C to stop."
             )
+            if bridge is not None:
+                console.print(
+                    f"[green]Telegram control listening[/green] for "
+                    f"[bold]{settings.control.trigger} …[/bold] in your chats."
+                )
             if verbose:
                 _print_tasks(enabled)
             with contextlib.suppress(KeyboardInterrupt):
                 await stop.wait()
         finally:
             console.print("[dim]Shutting down…[/dim]")
+            if bridge is not None:
+                await bridge.stop()
             await application.stop()
 
     _run(main())

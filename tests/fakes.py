@@ -88,6 +88,56 @@ class FakeMessage:
         self.action = None
 
 
+class FakeControlEvent:
+    """Shaped like a Telethon ``NewMessage.Event`` for what the bridge reads.
+
+    The bridge deliberately reads its event through ``getattr``, so this covers
+    the whole surface it touches: text, ids, who sent it, and the replied-to
+    message. Nothing here imports Telethon, which is what lets the control tests
+    run offline.
+    """
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        chat_id: int = -100123,
+        message_id: int = 500,
+        sender_id: int = 1,
+        out: bool = False,
+        sender: FakeEntity | None = None,
+        chat: FakeEntity | None = None,
+        reply_to_message: FakeMessage | None = None,
+        is_private: bool = False,
+        is_group: bool = True,
+        is_channel: bool = False,
+        date: datetime | None = None,
+    ) -> None:
+        self.raw_text = text
+        self.text = text
+        self.id = message_id
+        self.chat_id = chat_id
+        self.sender_id = sender_id
+        self.is_private = is_private
+        self.is_group = is_group
+        self.is_channel = is_channel
+        self.sender = sender or FakeEntity(sender_id, username="owner", first_name="Owner")
+        self.chat = chat or FakeEntity(chat_id, title="Project X")
+        self._reply = reply_to_message
+
+        self.message = FakeMessage(
+            message_id, text, sender_id=sender_id, out=out, chat_id=chat_id, date=date
+        )
+        if reply_to_message is not None:
+            self.message.reply_to = type("ReplyTo", (), {"reply_to_msg_id": reply_to_message.id})()
+
+    async def get_reply_message(self) -> FakeMessage | None:
+        return self._reply
+
+    async def get_sender(self) -> FakeEntity:
+        return self.sender
+
+
 class FakeDocument:
     def __init__(
         self,
@@ -135,6 +185,14 @@ class FakeDialog:
         self.message = message
 
 
+class _NullAsyncContext:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        return None
+
+
 class FakeTelegramClient:
     """A Telethon client stand-in that records what it was asked to do."""
 
@@ -150,6 +208,11 @@ class FakeTelegramClient:
         self.next_error: Exception | None = None
         self.sent: list[dict[str, Any]] = []
         self.downloads: list[str] = []
+        self.handlers: list[tuple[Any, Any]] = []
+        #: Ids of messages this client sent, in order. The control bridge keys its
+        #: "never read my own output" guard on them, so tests need to see them.
+        self.sent_ids: list[int] = []
+        self._next_sent_id = 900
 
     # lifecycle -------------------------------------------------------------
     def is_connected(self) -> bool:
@@ -167,6 +230,18 @@ class FakeTelegramClient:
     @property
     def disconnected(self) -> asyncio.Future[None]:
         return asyncio.get_event_loop().create_future()
+
+    # event handlers --------------------------------------------------------
+    def add_event_handler(self, callback: Any, event: Any = None) -> None:
+        self.handlers.append((callback, event))
+
+    def remove_event_handler(self, callback: Any, event: Any = None) -> None:
+        self.handlers = [(cb, ev) for cb, ev in self.handlers if cb is not callback]
+
+    def action(self, entity: Any, action: str = "typing") -> Any:
+        """Mimic Telethon's ``client.action`` async context manager."""
+        self.calls.append(("action", {"entity": entity, "action": action}))
+        return _NullAsyncContext()
 
     # entity resolution -----------------------------------------------------
     async def get_input_entity(self, peer: Any) -> FakePeer:
@@ -224,7 +299,11 @@ class FakeTelegramClient:
         self._maybe_raise()
         self.calls.append(("send_message", {"entity": entity, "message": message, **kwargs}))
         self.sent.append({"entity": entity, "message": message})
-        return FakeMessage(999, message, out=True)
+        # Distinct ids matter to the control bridge, which remembers what it sent
+        # so its own output can never be read back as a command.
+        self._next_sent_id += 1
+        self.sent_ids.append(self._next_sent_id)
+        return FakeMessage(self._next_sent_id, message, out=True, chat_id=entity)
 
     async def edit_message(self, entity: Any = None, **kwargs: Any) -> FakeMessage:
         self.calls.append(("edit_message", {"entity": entity, **kwargs}))

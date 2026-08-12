@@ -6,8 +6,8 @@ import json
 from typing import Any
 
 import pytest
-from tests.fakes import FakeTelegramClient, RecordingConfirmation
 
+from tests.fakes import FakeTelegramClient, RecordingConfirmation
 from tgagent.config.settings import Settings
 from tgagent.errors import PermissionDenied, ToolInputError
 from tgagent.risk import TrustLevel

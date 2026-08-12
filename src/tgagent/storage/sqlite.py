@@ -11,6 +11,7 @@ outside this module should import it directly except the composition root.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -91,12 +92,24 @@ class SQLiteStorage:
         except Exception as exc:
             raise StorageError(f"Cannot open database at {self._path}: {exc}") from exc
 
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA foreign_keys=ON")
-        await self._db.execute("PRAGMA synchronous=NORMAL")
-        await self._db.execute(f"PRAGMA busy_timeout={int(self._busy_timeout_ms)}")
-        await self._migrate()
+        # Everything past the open has to leave the connection closed if it
+        # fails. aiosqlite runs each connection on its own *non-daemon* thread, so
+        # a leaked connection does not merely leak a file handle — it keeps the
+        # interpreter alive at shutdown. A refused migration would otherwise print
+        # its error and then hang the process instead of exiting, and because
+        # __aenter__ raised, __aexit__ never runs to clean up either.
+        try:
+            self._db.row_factory = aiosqlite.Row
+            await self._db.execute("PRAGMA journal_mode=WAL")
+            await self._db.execute("PRAGMA foreign_keys=ON")
+            await self._db.execute("PRAGMA synchronous=NORMAL")
+            await self._db.execute(f"PRAGMA busy_timeout={int(self._busy_timeout_ms)}")
+            await self._migrate()
+        except BaseException:
+            database, self._db = self._db, None
+            with contextlib.suppress(Exception):
+                await database.close()
+            raise
         log.info("storage.connected", path=str(self._path), schema_version=SCHEMA_VERSION)
 
     async def close(self) -> None:

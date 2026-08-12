@@ -50,7 +50,19 @@
       "Bash(timeout 600 python -m pytest tests/ -x -q)",
       "Bash(timeout 900 .venv/bin/python -m pytest tests/ -q)",
       "Bash(python -c \"import croniter; print\\(croniter.__file__\\)\")",
-      "Bash(timeout 600 .venv/bin/python -m pytest -x -q)"
+      "Bash(timeout 600 .venv/bin/python -m pytest -x -q)",
+      "Bash(.venv/bin/python -)",
+      "Bash(timeout 120 .venv/bin/python /tmp/claude-1000/-home-amir-Desktop-TGAGENT/af8905ae-80d6-42e8-aa29-1691a57794dc/scratchpad/probe_worker.py)",
+      "Bash(.venv/bin/tgagent --help)",
+      "Bash(timeout 120 .venv/bin/python /tmp/claude-1000/-home-amir-Desktop-TGAGENT/af8905ae-80d6-42e8-aa29-1691a57794dc/scratchpad/probe2.py)",
+      "Bash(timeout 120 .venv/bin/python /tmp/claude-1000/-home-amir-Desktop-TGAGENT/af8905ae-80d6-42e8-aa29-1691a57794dc/scratchpad/probe3.py)",
+      "Bash(.venv/bin/python -m pytest tests/test_zz_probe.py -q -s)",
+      "Bash(.venv/bin/pytest tests/test_telegram_control.py -q -p no:randomly)",
+      "Bash(.venv/bin/python -m mypy src/tgagent/agent src/tgagent/llm src/tgagent/sandbox src/tgagent/scheduler src/tgagent/storage)",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(echo \"bandit=$?\")",
+      "Bash(.venv/bin/python -c \"print\\(0 in \\(None, False\\), 0.0 in \\(None,False\\)\\)\")",
+      "Bash(.venv/bin/pytest tests/test_sandbox.py -q -p no:randomly)"
     ]
   }
 }

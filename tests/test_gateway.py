@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from telethon import errors
-from tests.fakes import FakeClientManager, FakeMessage, FakeTelegramClient, RecordingConfirmation
 
+from tests.fakes import FakeClientManager, FakeMessage, FakeTelegramClient, RecordingConfirmation
 from tgagent.config.settings import PermissionSettings, Settings
 from tgagent.errors import PermissionDenied, TelegramCallError, TelegramError
 from tgagent.risk import PolicyDecision, RiskTier

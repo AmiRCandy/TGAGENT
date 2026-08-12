@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from tests.fakes import (
     CollectingEvents,
     FakeClientManager,
@@ -17,7 +18,6 @@ from tests.fakes import (
     FakeTelegramClient,
     RecordingConfirmation,
 )
-
 from tgagent.agent.runtime import AgentRuntime, RuntimeDependencies
 from tgagent.config.settings import Settings
 from tgagent.llm.providers.fake import FakeProvider, text_completion, tool_call_completion

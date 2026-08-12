@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+
 from tests.fakes import (
     FakeDialog,
     FakeDocument,
@@ -14,7 +15,6 @@ from tests.fakes import (
     FakeMessage,
     FakeTelegramClient,
 )
-
 from tgagent.config.settings import MediaSettings
 from tgagent.errors import EntityResolutionError, MediaTooLarge, MediaTypeRejected
 from tgagent.telegram.client import parse_proxy

@@ -6,7 +6,6 @@ import asyncio
 from typing import Any
 
 from tests.fakes import CollectingEvents
-
 from tgagent.agent.events import EventKind
 from tgagent.agent.runtime import AgentRuntime, RuntimeDependencies, _drop_dangling_tool_calls
 from tgagent.config.settings import Settings

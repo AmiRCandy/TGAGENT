@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.fakes import FakeClientManager, FakeTelegramClient, RecordingConfirmation
 
+from tests.fakes import FakeClientManager, FakeTelegramClient, RecordingConfirmation
 from tgagent.config.settings import Settings
 from tgagent.llm.providers.fake import FakeProvider
 from tgagent.security.permissions import PermissionEngine

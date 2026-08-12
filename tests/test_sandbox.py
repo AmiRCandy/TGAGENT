@@ -75,6 +75,32 @@ class TestExecution:
         )
         assert len(result.stdout) < 20_000
 
+    async def test_class_definitions_work(self, runner: Any) -> None:
+        """A `class` statement needs __build_class__, which the `_` filter removes.
+
+        Without it every class definition fails with a bare
+        "NameError: __build_class__ not found" — including the dataclasses idiom
+        below, whose module is on the default allowed_imports list.
+        """
+        result = await runner.execute(
+            ExecutionRequest(code="class Row:\n    n = 7\nresult = Row().n"), _deny
+        )
+        assert result.ok, result.error
+        assert result.result == 7
+
+    async def test_dataclasses_are_usable(self, runner: Any) -> None:
+        code = (
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class Row:\n"
+            "    name: str\n"
+            "    count: int\n"
+            "result = Row('alex', 3).count\n"
+        )
+        result = await runner.execute(ExecutionRequest(code=code), _deny)
+        assert result.ok, result.error
+        assert result.result == 3
+
     async def test_allowed_standard_library_works(self, runner: Any) -> None:
         code = (
             "import json, re, math, datetime, collections\n"
@@ -256,13 +282,38 @@ class TestGatewayBridge:
         with pytest.raises(SandboxError, match="maximum"):
             await bridge("get_dialogs", {"limit": 1})
 
+    async def test_every_flagged_call_is_recorded_not_just_the_worst(self, gateway: Any) -> None:
+        """A second injection attempt must still reach the model and the log.
+
+        The note list used to be updated only when a call beat the running high
+        score, so the lower-scoring of two injected reads vanished from the very
+        warning that exists to report it.
+        """
+        from tgagent.security.injection import ScanResult
+        from tgagent.telegram.gateway import CallContext
+
+        bridge = GatewayBridge(gateway, context=CallContext(run_id="r"), max_calls=5)
+        bridge._note_scan("get_messages", ScanResult(0.9, ("ignore previous instructions",)))
+        bridge._note_scan("get_dialogs", ScanResult(0.7, ("exfiltrate",)))
+
+        assert len(bridge.stats.suspicion_sources) == 2
+        assert bridge.stats.max_suspicion == 0.9
+
+    async def test_an_unflagged_call_does_not_add_a_note(self, gateway: Any) -> None:
+        from tgagent.security.injection import ScanResult
+        from tgagent.telegram.gateway import CallContext
+
+        bridge = GatewayBridge(gateway, context=CallContext(run_id="r"), max_calls=5)
+        bridge._note_scan("get_dialogs", ScanResult(0.0, ()))
+        assert bridge.stats.suspicion_sources == []
+
     async def test_sandbox_origin_is_stamped_on_the_context(self, gateway: Any) -> None:
         from tgagent.telegram.gateway import CallContext
 
         bridge = GatewayBridge(gateway, context=CallContext(run_id="r", origin="tool"), max_calls=5)
         # The bridge rewrites origin so the audit trail distinguishes generated
         # code from curated tool use, whatever the caller passed.
-        assert bridge._context.origin == "sandbox"  # noqa: SLF001
+        assert bridge._context.origin == "sandbox"
 
 
 class TestProtocol:
