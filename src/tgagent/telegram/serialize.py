@@ -301,8 +301,11 @@ def entity_to_dict(entity: Any) -> dict[str, Any]:
         "about",
     ):
         value = getattr(entity, attr, None)
-        if value not in (None, False):
-            out[attr] = truncate(value, 500) if isinstance(value, str) else value
+        # Identity, not equality: ``0 == False``, and a zero member count is a
+        # fact worth reporting rather than an absent field.
+        if value is None or value is False:
+            continue
+        out[attr] = truncate(value, 500) if isinstance(value, str) else value
     # A phone number is personal data; keep only enough to recognise it.
     if phone := out.get("phone"):
         out["phone"] = f"…{str(phone)[-4:]}"

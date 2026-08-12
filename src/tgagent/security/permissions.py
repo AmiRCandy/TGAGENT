@@ -397,6 +397,26 @@ class OperationRequest:
 
 
 @dataclass(slots=True, frozen=True)
+class PolicyExplanation:
+    """What the engine would decide about one method, and what governed it.
+
+    Returned by :meth:`PermissionEngine.explain` for operator-facing tools.
+    """
+
+    method: str
+    risk: RiskTier
+    decision: PolicyDecision
+    #: Override entries that governed the decision, in the policy's own spelling.
+    #: More than one can match, because a policy may name the same operation
+    #: several ways; when they disagree, the strictest wins.
+    matched_overrides: tuple[str, ...] = ()
+
+    @property
+    def from_override(self) -> bool:
+        return bool(self.matched_overrides)
+
+
+@dataclass(slots=True, frozen=True)
 class AuthorizationResult:
     """The engine's verdict, plus why."""
 
@@ -434,11 +454,10 @@ def canonical_method_key(method: str) -> tuple[str, str]:
 
     :func:`normalise_method` keeps the bare name verbatim because the rule tables
     list both spellings literally. Policy *overrides* cannot rely on that: an
-    operator writes whichever spelling they know, while the gateway exposes both
-    routes to the same operation, so ``messages.DeleteHistory: deny`` has to
-    govern a call made as ``delete_dialog``'s raw form and ``send_message: deny``
-    has to govern ``messages.SendMessage``. Whichever spelling is not covered is
-    otherwise a free bypass of the override.
+    operator writes whichever spelling they happen to know, while the gateway
+    exposes both routes to the same operation. So ``send_message: deny`` has to
+    govern a call made as ``messages.SendMessage`` and the reverse — the spelling
+    that is not covered would otherwise be a free bypass of the override.
 
     The only thing removed beyond case and the ``Request`` suffix is the
     separators that *are* the difference between the two spellings — underscores
@@ -449,6 +468,70 @@ def canonical_method_key(method: str) -> tuple[str, str]:
     """
     namespace, bare = normalise_method(method)
     return namespace, _METHOD_KEY_SEPARATORS.sub("", bare)
+
+
+# ------------------------------------------------------------- method aliases --
+# Friendly Telethon methods that are *not* merely another spelling of one raw
+# request but a wrapper that issues one (or several) of them. Normalisation cannot
+# bridge these — `delete_dialog` shares no letters with `messages.DeleteHistory` —
+# yet an operator who pinned `messages.DeleteHistory: deny` plainly meant the
+# friendly route too, and vice versa.
+#
+# Overrides found through this table may only tighten a verdict (see
+# `PermissionEngine._lookup_decision`), which is what makes a hand-curated,
+# deliberately non-exhaustive table safe: a pair that is missing falls back to the
+# tier default, never to allow.
+_FRIENDLY_ALIASES: dict[str, tuple[str, ...]] = {
+    "delete_dialog": ("messages.DeleteHistory", "messages.DeleteChatUser", "channels.LeaveChannel"),
+    "kick_participant": ("channels.EditBanned", "messages.DeleteChatUser"),
+    "edit_permissions": ("channels.EditBanned", "messages.EditChatDefaultBannedRights"),
+    "delete_contact": ("contacts.DeleteContacts",),
+    "send_file": (
+        "messages.SendMedia",
+        "messages.SendMultiMedia",
+        "upload.SaveFilePart",
+        "upload.SaveBigFilePart",
+    ),
+    "pin_message": ("messages.UpdatePinnedMessage",),
+    "unpin_message": ("messages.UpdatePinnedMessage", "messages.UnpinAllMessages"),
+    "mark_read": ("messages.ReadHistory", "channels.ReadHistory"),
+    "send_read_acknowledge": ("messages.ReadHistory", "channels.ReadHistory"),
+    "download_media": ("upload.GetFile",),
+    "download_file": ("upload.GetFile",),
+    "iter_download": ("upload.GetFile",),
+    "download_profile_photo": ("upload.GetFile",),
+    "edit_2fa": ("account.UpdatePasswordSettings",),
+    "get_messages": ("messages.GetHistory", "messages.Search"),
+    "iter_messages": ("messages.GetHistory", "messages.Search"),
+}
+
+
+def _build_alias_groups(table: dict[str, tuple[str, ...]]) -> dict[str, frozenset[str]]:
+    """Canonical-key equivalences, symmetric so either spelling finds the other.
+
+    Only friendly↔raw edges are recorded, never raw↔raw: `delete_dialog` is
+    reached from `channels.LeaveChannel`, but that must not make
+    `channels.LeaveChannel: deny` silently govern `messages.DeleteHistory`, which
+    is a different operation the operator did not mention.
+    """
+    groups: dict[str, set[str]] = {}
+    for friendly, raw_names in table.items():
+        friendly_key = canonical_method_key(friendly)[1]
+        for raw in raw_names:
+            raw_key = canonical_method_key(raw)[1]
+            if raw_key == friendly_key:
+                continue  # a plain re-spelling; canonical matching already has it
+            groups.setdefault(friendly_key, set()).add(raw_key)
+            groups.setdefault(raw_key, set()).add(friendly_key)
+    return {key: frozenset(values) for key, values in groups.items()}
+
+
+_ALIAS_GROUPS: dict[str, frozenset[str]] = _build_alias_groups(_FRIENDLY_ALIASES)
+
+
+def _strictest(decisions: Iterable[PolicyDecision]) -> PolicyDecision:
+    """The most restrictive of *decisions*; ``DENY`` beats ``CONFIRM`` beats ``ALLOW``."""
+    return max(decisions, key=_DECISION_SEVERITY.__getitem__)
 
 
 def classify(method: str) -> RiskTier:
@@ -573,18 +656,35 @@ class PermissionEngine:
                 risk=result.risk.value,
             )
 
+    def explain(self, method: str) -> PolicyExplanation:
+        """Why *method* would be decided the way it is.
+
+        This exists so that ``tgagent config policy <method>`` reports what the
+        engine will actually do. An interface that re-implements the lookup gets
+        it wrong the moment the lookup gains a rule — and an operator checking a
+        policy is doing so precisely because they need to trust the answer.
+        """
+        risk = classify(method)
+        namespace, key = canonical_method_key(method)
+        matched = self._overrides_matching(namespace, frozenset({key}))
+        matched += self._overrides_matching(None, _ALIAS_GROUPS.get(key, frozenset()))
+        return PolicyExplanation(
+            method=method,
+            risk=risk,
+            decision=self._lookup_decision(method, risk),
+            matched_overrides=tuple(dict.fromkeys(name for name, _ in matched)),
+        )
+
     # ------------------------------------------------------------ internals --
     def _lookup_decision(self, method: str, risk: RiskTier) -> PolicyDecision:
-        overrides = self._settings.method_overrides
         namespace, key = canonical_method_key(method)
 
-        # Exact string first, then a canonical match, so a policy can be written
-        # either as `messages.SendMessage` or `send_message` and governs calls
-        # made either way — the gateway routes both spellings to the same
-        # operation, so an override that only caught one of them is bypassable.
-        if method in overrides:
-            decision = overrides[method]
-        elif matches := self._overrides_matching(namespace, frozenset({key})):
+        # Canonical matching, so a policy can be written either as
+        # `messages.SendMessage` or `send_message` and governs calls made either
+        # way — the gateway routes both spellings to the same operation, so an
+        # override that only caught one of them is bypassable by using the other.
+        # An override spelled exactly like the call is simply one of these matches.
+        if matches := [d for _, d in self._overrides_matching(namespace, frozenset({key}))]:
             # Overlapping spellings can disagree (`send_message: allow` written
             # alongside `messages.SendMessage: deny`). Dict iteration order must
             # not decide a security question, so honour the strictest of them.
@@ -598,17 +698,22 @@ class PermissionEngine:
         # may therefore only *tighten* the verdict, never loosen it: the mapping
         # is hand-written and one friendly call can issue several requests, so it
         # is allowed to over-restrict but must never over-grant.
-        if aliases := _ALIAS_GROUPS.get(key):
-            if alias_matches := self._overrides_matching(None, aliases):
-                strictest = _strictest(alias_matches)
-                if _DECISION_SEVERITY[strictest] > _DECISION_SEVERITY[decision]:
-                    return strictest
+        aliases = _ALIAS_GROUPS.get(key, frozenset())
+        if alias_matches := [d for _, d in self._overrides_matching(None, aliases)]:
+            strictest = _strictest(alias_matches)
+            if _DECISION_SEVERITY[strictest] > _DECISION_SEVERITY[decision]:
+                return strictest
         return decision
 
     def _overrides_matching(
         self, namespace: str | None, keys: frozenset[str]
-    ) -> list[PolicyDecision]:
-        """Decisions of every override whose canonical name is one of *keys*.
+    ) -> list[tuple[str, PolicyDecision]]:
+        """Every override whose canonical name is one of *keys*, as written.
+
+        The policy's own spelling is carried alongside the decision so
+        :meth:`explain` can tell an operator *which* line governed a call. That
+        matters precisely because the match is no longer a string comparison: an
+        override can now govern a method it does not look like.
 
         *namespace*, when given, is the calling method's TL namespace. It is only
         compared when the override carries one too: the friendly spelling has no
@@ -617,14 +722,14 @@ class PermissionEngine:
         `channels.DeleteMessages: allow` leak onto `messages.DeleteMessages` would
         widen a grant — the one direction of sloppiness that fails open.
         """
-        matches: list[PolicyDecision] = []
+        matches: list[tuple[str, PolicyDecision]] = []
         for override_method, decision in self._settings.method_overrides.items():
             override_namespace, override_key = canonical_method_key(override_method)
             if override_key not in keys:
                 continue
             if namespace and override_namespace and namespace != override_namespace:
                 continue
-            matches.append(decision)
+            matches.append((override_method, decision))
         return matches
 
     def _check_chat_lists(self, target: str | None) -> str | None:

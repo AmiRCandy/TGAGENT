@@ -141,9 +141,14 @@ Downloaded files are hostile input:
   file has landed.
 - **MIME must be on an allow-list and the extension must not be on a blocklist.**
   Both, because either alone is trivially bypassed.
-- **Filenames are sanitised, never trusted.** `../../.ssh/authorized_keys` is
-  reduced to a leaf name, and the resolved path is verified to still sit inside
-  the download directory.
+- **Filenames are sanitised, never trusted** — including the *fallback* name used
+  when media carries none of its own, which is derived from the caller's peer
+  reference and so is equally untrusted. `../../.ssh/authorized_keys` is reduced
+  to a leaf name, and the resolved path is verified to still sit inside the
+  download directory.
+- **Media with no MIME type at all is refused** when an allow-list is configured,
+  rather than treated as permitted. Photos, which legitimately carry none on the
+  wire, are matched against the list as `image/jpeg`.
 - **Per-run directories**, reaped on a retention schedule.
 - **Nothing downloaded is executed, imported, or handed to the sandbox.** The
   sandbox learns a path and metadata, never contents.
@@ -151,9 +156,15 @@ Downloaded files are hostile input:
 ## Auditing
 
 Every gateway call is recorded: run id, method, risk tier, decision, target,
-argument digest, success, duration, and origin (`tool` / `sandbox` / `scheduler`).
-Denials and failures are recorded too — an audit log that only contains successes
-is not an audit log.
+argument digest, success, duration, the injection scanner's score for whatever
+came back, and origin (`tool` / `sandbox` / `scheduler`). Denials and failures are
+recorded too — an audit log that only contains successes is not an audit log.
+
+The score is its own column rather than a note on the failure reason, because a
+call that read something manipulative may well have worked perfectly; conflating
+the two makes every flagged read look like a broken call and loses the number as
+data. `tgagent audit` shows it in the `Flag` column, blank when the content looked
+clean.
 
 Message text is **not** stored by default; only a hash of the arguments, which is
 still enough to prove two calls were identical. Enable

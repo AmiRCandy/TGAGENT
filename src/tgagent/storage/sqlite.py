@@ -494,7 +494,8 @@ class _AuditRepo:
         await self._s.execute(
             "INSERT INTO audit_log (id, run_id, conversation_id, timestamp, method, risk, "
             "decision, target, argument_digest, argument_preview, succeeded, error, "
-            "duration_ms, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "duration_ms, suspicion, origin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.id,
                 entry.run_id,
@@ -509,6 +510,7 @@ class _AuditRepo:
                 int(entry.succeeded),
                 entry.error,
                 entry.duration_ms,
+                entry.suspicion,
                 entry.origin,
             ),
         )
@@ -546,5 +548,6 @@ class _AuditRepo:
             succeeded=bool(row["succeeded"]),
             error=row["error"],
             duration_ms=float(row["duration_ms"]),
+            suspicion=float(row["suspicion"] or 0.0),
             origin=row["origin"],
         )

@@ -7,6 +7,8 @@ cloud password. Each step can fail in ways the caller has to react to.
 The credential prompts are *callbacks*, so the CLI can read from a terminal, a
 web UI can render a form, and a test can supply canned values. Nothing here
 reads stdin or prints, which is what keeps the flow reusable across interfaces.
+Each wait for a credential is bounded by ``login_timeout``: a prompt nobody
+answers must fail the login, not hang the process holding it open.
 
 Secrets handled here — code, password, and the resulting session — are never
 logged, and the session file is written owner-only where the platform supports
@@ -15,6 +17,7 @@ it.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 from collections.abc import Awaitable, Callable
@@ -53,12 +56,16 @@ class LoginFlow:
         request_code: CredentialPrompt | None = None,
         request_password: CredentialPrompt | None = None,
         request_phone: CredentialPrompt | None = None,
+        timeout: float | None = None,
     ) -> None:
         self._manager = manager
         self._phone = phone
         self._request_code = request_code
         self._request_password = request_password
         self._request_phone = request_phone
+        # Defaulting from the client's own settings means every caller inherits
+        # the configured bound without having to thread it through.
+        self._timeout = timeout if timeout is not None else _configured_timeout(manager)
 
     async def run(self) -> LoginResult:
         """Sign in, or report that a valid session already exists."""
@@ -155,20 +162,38 @@ class LoginFlow:
             raise ConfigError(
                 "No phone number configured. Set TGAGENT_TELEGRAM__PHONE or supply a phone prompt."
             )
-        phone = (await self._request_phone()).strip()
+        phone = (await self._collect(self._request_phone, "phone number")).strip()
         if not phone:
             raise AuthenticationError("A phone number is required to sign in.")
         return phone
 
-    @staticmethod
-    async def _prompt(prompt: CredentialPrompt | None, what: str, *, hint_2fa: bool = False) -> str:
+    async def _prompt(
+        self, prompt: CredentialPrompt | None, what: str, *, hint_2fa: bool = False
+    ) -> str:
         if prompt is None:
             extra = " This account has two-factor authentication enabled." if hint_2fa else ""
             raise AuthenticationError(f"A {what} is required but no prompt was supplied.{extra}")
-        value = (await prompt()).strip()
+        value = (await self._collect(prompt, what)).strip()
         if not value:
             raise AuthenticationError(f"An empty {what} was supplied.")
         return value
+
+    async def _collect(self, prompt: CredentialPrompt, what: str) -> str:
+        """Await one credential, bounded by ``login_timeout``.
+
+        Telegram's login code expires on its own, so waiting for it forever only
+        ever ends in a hung process — one holding a half-finished sign-in.
+        """
+        if self._timeout is None:
+            return await prompt()
+        try:
+            return await asyncio.wait_for(prompt(), self._timeout)
+        except TimeoutError as exc:
+            raise AuthenticationError(
+                f"No {what} was supplied within {self._timeout:g}s, so the sign-in was "
+                f"abandoned. Run the login again when you are ready to enter it, or "
+                f"raise TGAGENT_TELEGRAM__LOGIN_TIMEOUT."
+            ) from exc
 
     def _manager_session_path(self) -> Path:
         return Path(self._manager._session_path)  # noqa: SLF001 - same subsystem
@@ -190,3 +215,10 @@ class LoginFlow:
             session_path=self._manager_session_path(),
             was_already_authorized=was_already_authorized,
         )
+
+
+def _configured_timeout(manager: TelegramClientManager) -> float | None:
+    """``login_timeout`` from the client's settings, or ``None`` if unavailable."""
+    settings = getattr(manager, "_settings", None)  # same subsystem, private by convention
+    value = getattr(settings, "login_timeout", None)
+    return float(value) if value else None

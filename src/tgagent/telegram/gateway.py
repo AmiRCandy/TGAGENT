@@ -511,10 +511,21 @@ class TelegramGateway:
             succeeded=succeeded,
             error=error,
             duration_ms=duration_ms,
+            suspicion=suspicion,
             origin=ctx.origin,
         )
         if suspicion:
-            entry.error = (entry.error or "") + f" [content suspicion={suspicion:.2f}]"
+            # A score describes what came back, not a failure, so it has its own
+            # column and its own structured event. It deliberately does not touch
+            # ``entry.error``: that field is the reason a call did not work, and
+            # a call that scored above zero may have worked perfectly.
+            log.warning(
+                "gateway.content_flagged",
+                method=request.method,
+                target=request.target,
+                run_id=ctx.run_id,
+                suspicion=round(suspicion, 2),
+            )
         try:
             await self._audit.record(entry)
         except Exception as exc:  # noqa: BLE001 - auditing must never break a run

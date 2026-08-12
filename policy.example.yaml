@@ -33,6 +33,12 @@ defaults:
 # or `send_message` — and both forms govern both call styles.
 # ─────────────────────────────────────────────────────────────────────────────
 method_overrides:
+  # Spellings are equivalent: `send_message` and `messages.SendMessage` are one
+  # override, and if two spellings disagree the strictest one wins. A namespace is
+  # only compared when both sides have one, so `channels.DeleteMessages` does not
+  # govern `messages.DeleteMessages`. Verify with:
+  #   tgagent config policy <method>
+  #
   # Deleting history is not undoable and is rarely what anyone actually wanted.
   messages.DeleteHistory: deny
   channels.DeleteHistory: deny
@@ -49,7 +55,13 @@ method_overrides:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Chat scoping. Applies to writes only; reads are unaffected.
-# Accepts @usernames or numeric ids. The denylist wins over the allowlist.
+# Accepts @usernames, numeric ids, and t.me links. The denylist wins over the
+# allowlist, and with either list set a write whose target cannot be identified is
+# denied rather than assumed safe.
+#
+# This matches *how a call names the chat*, not the chat itself — resolving a
+# username to an id needs a network round trip. "@work" does NOT match
+# -1001234567890. List a chat under every reference an agent might use.
 # ─────────────────────────────────────────────────────────────────────────────
 chat_allowlist: []
   # - "@my_notes_bot"

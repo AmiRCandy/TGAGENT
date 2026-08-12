@@ -35,7 +35,7 @@ from tgagent.security.confirm import (
     ConfirmationOutcome,
     ConfirmationRequest,
 )
-from tgagent.security.permissions import classify
+from tgagent.security.permissions import PermissionEngine
 from tgagent.storage.models import ScheduledTask, ScheduleKind
 from tgagent.telegram.auth import LoginFlow
 from tgagent.telegram.client import TelegramClientManager
@@ -679,18 +679,25 @@ def config_policy(
     permissions = resolve_permissions(settings.permissions)
 
     if method:
-        risk = classify(method)
-        decision = permissions.method_overrides.get(method, permissions.defaults.get(risk))
-        style = _RISK_STYLE.get(risk, "white")
-        console.print(
-            Panel(
-                f"Method   : {method}\n"
-                f"Risk tier: [{style}]{risk.value}[/{style}]\n"
-                f"Decision : {decision.value if decision else 'deny'}\n"
-                f"Override : {'yes' if method in permissions.method_overrides else 'no'}",
-                title="Policy explanation",
-            )
-        )
+        # Asked of the engine rather than recomputed here. An override no longer
+        # has to be spelled the way the call is — `send_message` governs
+        # `messages.SendMessage` and vice versa — so a lookup reimplemented in
+        # this file would confidently report "Override: no" about a policy line
+        # that does in fact govern the call. Someone running this command is
+        # doing so precisely because they need the answer to be true.
+        explanation = PermissionEngine(permissions).explain(method)
+        style = _RISK_STYLE.get(explanation.risk, "white")
+        lines = [
+            f"Method   : {method}",
+            f"Risk tier: [{style}]{explanation.risk.value}[/{style}]",
+            f"Decision : {explanation.decision.value}",
+        ]
+        if explanation.from_override:
+            governed = ", ".join(explanation.matched_overrides)
+            lines.append(f"Override : yes — {governed}")
+        else:
+            lines.append("Override : no (risk-tier default)")
+        console.print(Panel("\n".join(lines), title="Policy explanation"))
         return
 
     table = Table(title="Permission policy")
@@ -753,10 +760,14 @@ def audit(
                 console.print("[dim]No audit entries yet.[/dim]")
                 return
             table = Table(title="Audit log")
-            for column in ("When", "Method", "Risk", "Decision", "Target", "Origin", "OK"):
+            for column in ("When", "Method", "Risk", "Decision", "Target", "Origin", "OK", "Flag"):
                 table.add_column(column)
             for entry in entries:
                 style = _RISK_STYLE.get(RiskTier(entry.risk), "white") if entry.risk else "white"
+                # The injection-scanner score, shown only when there is one. A
+                # blank cell here means the content that came back looked clean —
+                # which is what almost every row should say.
+                flag = f"[yellow]⚠ {entry.suspicion:.2f}[/yellow]" if entry.suspicion else ""
                 table.add_row(
                     entry.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                     entry.method,
@@ -765,6 +776,7 @@ def audit(
                     (entry.target or "")[:24],
                     entry.origin,
                     "[green]✓[/green]" if entry.succeeded else "[red]✗[/red]",
+                    flag,
                 )
             console.print(table)
         finally:

@@ -91,7 +91,16 @@ _V1: Final = (
     "CREATE INDEX idx_audit_time ON audit_log(timestamp DESC)",
 )
 
+# The injection scanner's score for content a call returned. It used to be
+# appended to `error`, which made every successful read of flagged content look
+# like a failed call — and lost the number as data. It is a property of the
+# content, not a failure, so it gets its own column.
+_V2: Final = ("ALTER TABLE audit_log ADD COLUMN suspicion REAL NOT NULL DEFAULT 0",)
+
 #: ``(version, description, statements)``, applied in ascending order.
-MIGRATIONS: Final[tuple[Migration, ...]] = ((1, "initial schema", _V1),)
+MIGRATIONS: Final[tuple[Migration, ...]] = (
+    (1, "initial schema", _V1),
+    (2, "record content suspicion on audit entries", _V2),
+)
 
 SCHEMA_VERSION: Final[int] = max(m[0] for m in MIGRATIONS)

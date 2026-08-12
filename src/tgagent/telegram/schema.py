@@ -175,6 +175,15 @@ class TelegramSchemaIndex:
             log.warning("schema.cache_unreadable", error=str(exc))
             return False
 
+        # Parseable is not the same as usable: a file holding a list, a number or
+        # ``null`` is still just a cache miss, and rebuilding is always possible.
+        if not isinstance(payload, dict):
+            log.warning(
+                "schema.cache_malformed",
+                error=f"expected a JSON object, got {type(payload).__name__}",
+            )
+            return False
+
         if payload.get("cache_version") != self.CACHE_VERSION:
             return False
         if payload.get("telethon_version") != _telethon_version():

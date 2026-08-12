@@ -24,6 +24,32 @@ friendly (`send_message`) — and both are normalised (lowercased, `Request` suf
 stripped) before matching explicit tables. A policy written either way governs
 calls made either way; capitalisation cannot be used to dodge a rule.
 
+That equivalence applies to `method_overrides` too, and it is worth being precise
+about, because the gateway exposes both routes to the same operation:
+
+* **Separators and case are ignored.** `send_message`, `sendMessage` and
+  `messages.SendMessage` are one override. Only separators are folded, never
+  letters, so `deletehistory` and `deletemessages` stay distinct.
+* **A namespace is compared only when both sides carry one.** `send_message`
+  (which has none) still governs `messages.SendMessage`, but
+  `channels.DeleteMessages: allow` does *not* leak onto `messages.DeleteMessages`
+  — those are two different operations, and widening a grant is the one direction
+  of sloppiness that fails open.
+* **Overlapping spellings that disagree resolve to the strictest.** Writing
+  `send_message: allow` next to `messages.SendMessage: deny` denies. Dict
+  iteration order must not decide a security question.
+* **A friendly wrapper is not a re-spelling of the requests it issues.**
+  `delete_dialog` issues `messages.DeleteHistory`, `DeleteChatUser`, or
+  `channels.LeaveChannel` depending on the peer, so no normalisation can bridge
+  them. A small curated table connects the two, and an override reached through
+  it may only **tighten** a verdict, never loosen it: the table is hand-written
+  and non-exhaustive, so a missing pair falls back to the tier default rather
+  than to `allow`.
+
+Because an override no longer has to *look* like the call it governs, ask the
+engine rather than reading the YAML — `tgagent config policy <method>` reports the
+line that actually applies.
+
 **The fallback is the important part.** An unrecognised method that does not look
 like a read is classified `destructive`:
 
@@ -39,13 +65,25 @@ Check any method:
 
 ```console
 $ tgagent config policy messages.DeleteHistory
-╭──────── Policy explanation ────────╮
-│ Method   : messages.DeleteHistory  │
-│ Risk tier: destructive             │
-│ Decision : confirm                 │
-│ Override : no                      │
-╰────────────────────────────────────╯
+╭──────────── Policy explanation ────────────╮
+│ Method   : messages.DeleteHistory          │
+│ Risk tier: destructive                     │
+│ Decision : confirm                         │
+│ Override : no (risk-tier default)          │
+╰────────────────────────────────────────────╯
+
+$ tgagent config policy messages.SendMessage      # policy says `send_message: deny`
+╭──────────── Policy explanation ────────────╮
+│ Method   : messages.SendMessage            │
+│ Risk tier: externally_visible              │
+│ Decision : deny                            │
+│ Override : yes — send_message              │
+╰────────────────────────────────────────────╯
 ```
+
+The second panel is why this command asks the engine instead of looking the method
+up in the policy dictionary: the override that governs the call is not spelled
+like it.
 
 ## Decisions
 
@@ -116,9 +154,19 @@ Blast-radius limits, independent of whether any individual call was approved:
 | `chat_allowlist` / `chat_denylist` | — | Writes confined to (or excluded from) named chats. Reads unaffected |
 | `read_only_mode` | false | Global kill switch |
 
-Chat lists normalise `@` and case, so `@Work`, `work`, and `@work` are one thing.
-With an allow-list configured, a write with **no identifiable target** is denied
-rather than assumed safe.
+Chat lists normalise `@`, case, and `t.me` links, so `@Work`, `work`, `t.me/work`
+and `https://www.t.me/work/42` are one thing. With **either** list configured, a
+write whose target the engine cannot name is denied rather than assumed safe —
+`contacts.Block(id="@x")` names its peer in an argument the engine does not
+recognise, and used to walk straight past the denylist.
+
+> **A chat list matches how the call names the chat, not the chat itself.**
+> Resolving a username to an id needs a network round trip, and this engine is
+> synchronous by design. So `@company_announcements` does **not** match
+> `-1001234567890`, nor an invite link like `t.me/+AbCdEf`, nor `t.me/c/123/7`.
+> List a chat under every reference an agent might plausibly use — username *and*
+> numeric id. `max_outbound_per_run` and `confirm` are what bound the case you
+> forgot.
 
 ## Confirmation
 

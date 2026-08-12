@@ -12,8 +12,14 @@ from tgagent.config.settings import PermissionSettings
 from tgagent.errors import PermissionDenied
 from tgagent.risk import PolicyDecision, RiskTier
 from tgagent.security.permissions import (
+    _ACCOUNT_SECURITY_METHODS,
+    _DESTRUCTIVE_METHODS,
+    _EXTERNALLY_VISIBLE_METHODS,
+    _READ_ONLY_METHODS,
+    _REVERSIBLE_METHODS,
     OperationRequest,
     PermissionEngine,
+    canonical_method_key,
     classify,
     normalise_method,
 )
@@ -113,6 +119,38 @@ class TestClassification:
         assert normalise_method("send_message") == ("", "send_message")
         assert normalise_method("messages.SearchRequest") == ("messages", "search")
 
+    def test_canonical_method_key_folds_the_two_spellings_together(self) -> None:
+        assert (
+            canonical_method_key("send_message")[1]
+            == canonical_method_key("messages.SendMessage")[1]
+        )
+        # …without folding together methods that are genuinely different.
+        assert (
+            canonical_method_key("messages.DeleteHistory")[1]
+            != (canonical_method_key("delete_messages")[1])
+        )
+        assert canonical_method_key("block")[1] != canonical_method_key("blockuser")[1]
+
+    def test_a_reversible_ui_toggle_is_not_misread_as_destructive(self) -> None:
+        # `toggledialogfilterTags` used to be spelled with a capital, and the rule
+        # tables are searched with a lowercased name, so the entry never matched
+        # and a trivial UI toggle fell through to the destructive fallback.
+        assert classify("messages.ToggleDialogFilterTags") is RiskTier.REVERSIBLE
+        assert classify("toggledialogfiltertags") is RiskTier.REVERSIBLE
+
+    def test_no_rule_table_entry_is_unreachable(self) -> None:
+        # The general form of the bug above: an entry carrying a capital can never
+        # be matched, and it does not fail loudly — it silently misclassifies.
+        for table in (
+            _ACCOUNT_SECURITY_METHODS,
+            _DESTRUCTIVE_METHODS,
+            _EXTERNALLY_VISIBLE_METHODS,
+            _REVERSIBLE_METHODS,
+            _READ_ONLY_METHODS,
+        ):
+            unreachable = sorted(entry for entry in table if entry != entry.lower())
+            assert unreachable == []
+
     def test_tier_ordering(self) -> None:
         assert RiskTier.DESTRUCTIVE.at_least(RiskTier.EXTERNALLY_VISIBLE)
         assert not RiskTier.READ_ONLY.at_least(RiskTier.REVERSIBLE)
@@ -168,6 +206,79 @@ class TestAuthorisation:
         result = engine.authorize(OperationRequest(method="messages.SendMessage"), interactive=True)
         assert result.decision is PolicyDecision.DENY
 
+    @pytest.mark.parametrize("written_as", ["send_message", "messages.SendMessage"])
+    @pytest.mark.parametrize(
+        "called_as", ["send_message", "messages.SendMessage", "messages.SendMessageRequest"]
+    )
+    def test_an_override_governs_either_spelling_of_the_method(
+        self, written_as: str, called_as: str
+    ) -> None:
+        # The gateway exposes both routes to the same operation, so an override
+        # written in one spelling has to catch calls made in the other — otherwise
+        # the other spelling is a free bypass of the policy.
+        engine = PermissionEngine(
+            PermissionSettings(method_overrides={written_as: PolicyDecision.DENY})
+        )
+        result = engine.authorize(OperationRequest(method=called_as), interactive=True)
+        assert result.decision is PolicyDecision.DENY
+
+    def test_an_override_does_not_leak_onto_a_different_method(self) -> None:
+        # Folding the spellings together must not fold distinct operations
+        # together: a grant is the direction that fails open.
+        engine = PermissionEngine(
+            PermissionSettings(method_overrides={"messages.DeleteHistory": PolicyDecision.ALLOW})
+        )
+        assert (
+            engine.authorize(OperationRequest(method="delete_messages"), interactive=True).decision
+            is PolicyDecision.CONFIRM
+        )
+        # Nor may a grant written for one namespace widen another namespace's
+        # same-named request.
+        namespaced = PermissionEngine(
+            PermissionSettings(method_overrides={"channels.DeleteMessages": PolicyDecision.ALLOW})
+        )
+        assert (
+            namespaced.authorize(
+                OperationRequest(method="messages.DeleteMessages"), interactive=True
+            ).decision
+            is PolicyDecision.CONFIRM
+        )
+
+    def test_conflicting_spellings_resolve_to_the_strictest(self) -> None:
+        engine = PermissionEngine(
+            PermissionSettings(
+                method_overrides={
+                    "send_message": PolicyDecision.ALLOW,
+                    "messages.SendMessage": PolicyDecision.DENY,
+                }
+            )
+        )
+        for method in ("send_message", "messages.SendMessage"):
+            result = engine.authorize(OperationRequest(method=method), interactive=True)
+            assert result.decision is PolicyDecision.DENY
+
+    def test_a_raw_override_tightens_the_friendly_wrapper_that_issues_it(self) -> None:
+        # `delete_dialog` is not a re-spelling of `messages.DeleteHistory`, it is a
+        # wrapper that issues it, so no normalisation can bridge the two. Pinning
+        # the raw request must still govern the friendly route.
+        engine = PermissionEngine(
+            PermissionSettings(method_overrides={"messages.DeleteHistory": PolicyDecision.DENY})
+        )
+        for method in ("messages.DeleteHistory", "delete_dialog"):
+            result = engine.authorize(OperationRequest(method=method), interactive=True)
+            assert result.decision is PolicyDecision.DENY
+
+    def test_wrapper_matching_can_only_tighten_never_loosen(self) -> None:
+        # `delete_dialog` also removes members and leaves channels, so an `allow`
+        # written for one of the requests it may issue must not grant the wrapper.
+        engine = PermissionEngine(
+            PermissionSettings(method_overrides={"messages.DeleteHistory": PolicyDecision.ALLOW})
+        )
+        assert (
+            engine.authorize(OperationRequest(method="delete_dialog"), interactive=True).decision
+            is PolicyDecision.CONFIRM
+        )
+
     def test_denylist_blocks_writes_to_a_chat(self) -> None:
         engine = PermissionEngine(
             PermissionSettings(
@@ -195,6 +306,72 @@ class TestAuthorisation:
             OperationRequest(method="send_message", target="work"), interactive=True
         )
         assert result.decision is PolicyDecision.DENY
+
+    def test_denylist_does_not_fail_open_on_an_unnameable_target(self) -> None:
+        # `contacts.Block(id="@work")`: `id` is not one of the peer argument names
+        # `extract_target` knows, so the gateway hands the engine `target=None`.
+        # Skipping the denylist there would wave through exactly the write the
+        # operator forbade, so an unnameable target has to be a refusal.
+        engine = PermissionEngine(
+            PermissionSettings(
+                chat_denylist=["@work"],
+                defaults={RiskTier.DESTRUCTIVE: PolicyDecision.ALLOW},
+            )
+        )
+        result = engine.authorize(
+            OperationRequest(method="contacts.Block", arguments={"id": "@work"}), interactive=True
+        )
+        assert result.decision is PolicyDecision.DENY
+        assert "denylist" in result.reason
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "@company_announcements",
+            "company_announcements",
+            "t.me/company_announcements",
+            "https://t.me/company_announcements",
+            "http://www.t.me/company_announcements/",
+            "https://t.me/company_announcements/42",
+            "HTTPS://T.ME/Company_Announcements",
+        ],
+    )
+    def test_denylist_matches_a_chat_addressed_by_link(self, target: str) -> None:
+        # A `t.me` link is the same reference as an `@name`, so writing one form in
+        # the policy must cover a call that uses the other.
+        engine = PermissionEngine(
+            PermissionSettings(
+                chat_denylist=["@company_announcements"],
+                defaults={RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW},
+            )
+        )
+        result = engine.authorize(
+            OperationRequest(method="send_message", target=target), interactive=True
+        )
+        assert result.decision is PolicyDecision.DENY
+
+    def test_link_normalisation_does_not_over_match(self) -> None:
+        engine = PermissionEngine(
+            PermissionSettings(
+                chat_denylist=["https://t.me/company_announcements"],
+                defaults={RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW},
+            )
+        )
+        assert (
+            engine.authorize(
+                OperationRequest(method="send_message", target="@company_announcements"),
+                interactive=True,
+            ).decision
+            is PolicyDecision.DENY
+        )
+        # A different chat, and an invite link that is not a username, stay clear.
+        for target in ("@company_announcements_v2", "https://t.me/+company_announcements"):
+            assert (
+                engine.authorize(
+                    OperationRequest(method="send_message", target=target), interactive=True
+                ).decision
+                is PolicyDecision.ALLOW
+            )
 
     def test_allowlist_restricts_writes(self) -> None:
         engine = PermissionEngine(
@@ -296,3 +473,49 @@ class TestAuthorisation:
         assert verdict.needs_confirmation
         assert "hello there" in verdict.prompt
         assert "@alex" in verdict.prompt
+
+
+class TestExplanation:
+    """`tgagent config policy <method>` must report what the engine will do.
+
+    An interface that recomputes the lookup drifts the moment the lookup gains a
+    rule — and it already had: an override is matched canonically, so one written
+    in the friendly spelling governs the raw request and a string comparison in
+    the CLI reported "Override: no" about a line that denied the call.
+    """
+
+    def test_a_tier_default_is_reported_as_such(self) -> None:
+        explanation = PermissionEngine(PermissionSettings()).explain("messages.SendMessage")
+        assert explanation.risk is RiskTier.EXTERNALLY_VISIBLE
+        assert explanation.decision is PolicyDecision.CONFIRM
+        assert not explanation.from_override
+        assert explanation.matched_overrides == ()
+
+    def test_an_override_is_reported_under_the_spelling_the_policy_used(self) -> None:
+        engine = PermissionEngine(
+            PermissionSettings(method_overrides={"send_message": PolicyDecision.DENY})
+        )
+        explanation = engine.explain("messages.SendMessage")
+        assert explanation.decision is PolicyDecision.DENY
+        assert explanation.from_override
+        assert explanation.matched_overrides == ("send_message",)
+
+    def test_the_explanation_agrees_with_the_verdict(self) -> None:
+        """The two must not be able to disagree; that is the whole point."""
+        settings = PermissionSettings(
+            method_overrides={
+                "send_message": PolicyDecision.DENY,
+                "messages.ForwardMessages": PolicyDecision.ALLOW,
+            }
+        )
+        engine = PermissionEngine(settings)
+        for method in ("send_message", "messages.SendMessage", "forward_messages", "get_messages"):
+            explanation = engine.explain(method)
+            verdict = engine.authorize(OperationRequest(method=method), interactive=True)
+            assert explanation.decision is verdict.decision, method
+            assert explanation.risk is verdict.risk, method
+
+    def test_an_unknown_method_explains_the_fail_safe(self) -> None:
+        explanation = PermissionEngine(PermissionSettings()).explain("obliterate_everything")
+        assert explanation.risk is RiskTier.DESTRUCTIVE
+        assert not explanation.from_override

@@ -141,5 +141,8 @@ class AuditEntry:
     succeeded: bool = True
     error: str | None = None
     duration_ms: float = 0.0
+    #: Injection-scanner score for the content this call returned, 0.0 when clean.
+    #: Separate from ``error`` on purpose: flagged content is not a failed call.
+    suspicion: float = 0.0
     #: Where the call came from: ``tool``, ``sandbox``, or ``scheduler``.
     origin: str = "tool"

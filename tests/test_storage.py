@@ -247,3 +247,37 @@ class TestAudit:
         removed = await storage.audit.prune(now - timedelta(days=30))
         assert removed == 1
         assert [e.run_id for e in await storage.audit.list_recent()] == ["new"]
+
+
+class TestAuditSuspicion:
+    """The scanner's score is part of the record, not part of the error text.
+
+    It used to be appended to `error`, which made a *successful* read of flagged
+    content indistinguishable from a failed call to anything querying the log —
+    and lost the number as data.
+    """
+
+    async def test_the_score_round_trips(self, storage: SQLiteStorage) -> None:
+        await storage.audit.record(
+            AuditEntry(method="get_messages", risk="read_only", decision="allow", suspicion=0.72)
+        )
+        entry = (await storage.audit.list_recent(limit=1))[0]
+        assert entry.suspicion == 0.72
+        assert entry.succeeded is True
+        assert entry.error is None
+
+    async def test_a_clean_call_scores_zero_rather_than_null(self, storage: SQLiteStorage) -> None:
+        await storage.audit.record(AuditEntry(method="get_dialogs", decision="allow"))
+        assert (await storage.audit.list_recent(limit=1))[0].suspicion == 0.0
+
+    async def test_an_existing_database_gains_the_column(self, tmp_path: Path) -> None:
+        """Migration 2 is an ALTER on a table deployed databases already have."""
+        path = tmp_path / "db.sqlite"
+        async with SQLiteStorage(path) as store:
+            columns = {r["name"] for r in await store.query("PRAGMA table_info(audit_log)")}
+            assert "suspicion" in columns
+
+        # Re-opening must not try to add it twice.
+        async with SQLiteStorage(path) as store:
+            row = await store.query_one("PRAGMA user_version")
+            assert int(row[0]) == SCHEMA_VERSION

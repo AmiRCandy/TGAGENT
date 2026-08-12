@@ -498,6 +498,9 @@ class TestMediaValidation:
 class _UnauthorisedClient:
     """A client that connects but has no session, so login has to prompt."""
 
+    def __init__(self) -> None:
+        self.phones: list[str] = []
+
     def is_connected(self) -> bool:
         return True
 
@@ -506,6 +509,10 @@ class _UnauthorisedClient:
 
     async def is_user_authorized(self) -> bool:
         return False
+
+    async def send_code_request(self, phone: str) -> SimpleNamespace:
+        self.phones.append(phone)
+        return SimpleNamespace(phone_code_hash="hash", type=SimpleNamespace())
 
 
 class _LoginManager:
@@ -540,7 +547,7 @@ class TestLoginTimeout:
             phone=None,
             request_phone=never_answers,
         )
-        with pytest.raises(AuthenticationError, match="0.05s"):
+        with pytest.raises(AuthenticationError, match=r"within 0\.05s"):
             await asyncio.wait_for(flow.run(), 5)
 
     async def test_a_prompt_answered_in_time_is_used(self) -> None:
@@ -554,9 +561,10 @@ class TestLoginTimeout:
             request_phone=answers,
         )
         # No code prompt is supplied, so the flow gets past the phone step and
-        # then reports the missing one — proving the phone was accepted.
+        # then reports the missing one.
         with pytest.raises(AuthenticationError, match="login code is required"):
             await flow.run()
+        assert manager.client.phones == ["+15551234567"]
 
 
 class _SearchSlice:

@@ -5,7 +5,9 @@ Files arriving from Telegram are **hostile input**. The rules enforced here:
 * **Size is checked before the transfer starts**, from the document metadata,
   not after a 2 GB file has landed on disk.
 * **MIME type must be on an allow-list**, and the extension must not be on a
-  blocklist. Both are checked, because either alone is trivially bypassed.
+  blocklist. Both are checked, because either alone is trivially bypassed. Media
+  declaring no MIME type is refused unless its kind implies one — a photo is
+  always JPEG — so omitting the field is not a way past the allow-list.
 * **Filenames are sanitised, never trusted.** A caption-supplied name like
   ``../../.ssh/authorized_keys`` is reduced to a leaf name, and the resolved
   path is verified to still sit inside the download directory.
@@ -36,6 +38,11 @@ log = get_logger(__name__)
 _UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _LEADING_DOTS = re.compile(r"^\.+")
 
+#: Media kinds Telegram serves with no MIME type of their own, and the type they
+#: are in fact. Photos are always JPEG on the wire, so they can still be matched
+#: against the allow-list rather than skipping it.
+_IMPLICIT_MIME_TYPES = {"MessageMediaPhoto": "image/jpeg"}
+
 
 @dataclass(slots=True)
 class DownloadResult:
@@ -61,9 +68,18 @@ def sanitise_filename(name: str | None, *, fallback: str = "file") -> str:
     Path separators, traversal sequences, control characters, and Windows
     reserved device names are all removed. The result is always a plain name
     with no directory component.
+
+    The *fallback* is sanitised on exactly the same terms: callers build it from
+    untrusted material such as a peer reference, so trusting it would reopen the
+    traversal it is meant to avoid.
     """
+    return _safe_leaf(name) or _safe_leaf(fallback) or "file"
+
+
+def _safe_leaf(name: str | None) -> str:
+    """Sanitise one candidate name, returning ``""`` when nothing usable is left."""
     if not name:
-        return fallback
+        return ""
 
     # Strip any directory component the sender tried to smuggle in.
     candidate = name.replace("\\", "/").split("/")[-1]
@@ -73,7 +89,7 @@ def sanitise_filename(name: str | None, *, fallback: str = "file") -> str:
     candidate = _LEADING_DOTS.sub("", candidate).strip("_. ")
 
     if not candidate:
-        return fallback
+        return ""
 
     stem, dot, suffix = candidate.rpartition(".")
     # Windows treats these as devices regardless of extension.
@@ -120,8 +136,20 @@ class MediaManager:
         return directory
 
     # ------------------------------------------------------------ validate --
-    def check_metadata(self, *, size: int | None, mime_type: str | None, file_name: str) -> None:
-        """Reject a file *before* transferring it."""
+    def check_metadata(
+        self,
+        *,
+        size: int | None,
+        mime_type: str | None,
+        file_name: str,
+        media_type: str | None = None,
+    ) -> None:
+        """Reject a file *before* transferring it.
+
+        ``media_type`` is the Telethon media class name. It is what distinguishes
+        a kind that legitimately carries no MIME type of its own from a document
+        that simply failed to declare one.
+        """
         if size is not None and size > self._settings.max_file_bytes:
             raise MediaTooLarge(
                 f"{file_name} is {size:,} bytes, over the "
@@ -135,13 +163,20 @@ class MediaManager:
             )
 
         allowed = self._settings.allowed_mime_prefixes
-        if (
-            allowed
-            and mime_type
-            and not any(mime_type.lower().startswith(p.lower()) for p in allowed)
-        ):
+        if not allowed:
+            return
+
+        effective = (mime_type or "").strip() or _IMPLICIT_MIME_TYPES.get(media_type or "", "")
+        if not effective:
+            # Fail closed: an undeclared MIME type is not a permitted one, or the
+            # allow-list would be bypassed by simply omitting the field.
             raise MediaTypeRejected(
-                f"Refusing to download {file_name}: MIME type {mime_type!r} is not on "
+                f"Refusing to download {file_name}: it declares no MIME type, so it "
+                f"cannot be matched against the allow-list."
+            )
+        if not any(effective.lower().startswith(p.lower()) for p in allowed):
+            raise MediaTypeRejected(
+                f"Refusing to download {file_name}: MIME type {effective!r} is not on "
                 f"the allow-list."
             )
 
@@ -172,7 +207,10 @@ class MediaManager:
             fallback=f"{peer}_{message_id}".replace("@", ""),
         )
         self.check_metadata(
-            size=info.get("size"), mime_type=info.get("mime_type"), file_name=file_name
+            size=info.get("size"),
+            mime_type=info.get("mime_type"),
+            file_name=file_name,
+            media_type=info.get("media_type"),
         )
 
         destination = self._unique_path(self.run_directory(run_id), file_name)
@@ -234,8 +272,14 @@ class MediaManager:
                 log.warning("media.cleanup_failed", path=str(path), error=str(exc))
 
         for directory in sorted(self._root.rglob("*"), reverse=True):
-            if directory.is_dir():
-                with contextlib.suppress(OSError):
+            if not directory.is_dir():
+                continue
+            # A run directory is created before anything is written into it, and
+            # Telethon does not mkdir. Reaping one that a live run is about to
+            # use fails its download, so only directories too old to belong to a
+            # live run are removed.
+            with contextlib.suppress(OSError):
+                if directory.stat().st_mtime < cutoff_ts:
                     directory.rmdir()  # only succeeds when empty
 
         if removed:

@@ -27,6 +27,11 @@ from tgagent.telegram.serialize import dialog_to_dict, message_to_dict
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
 
+#: How many global-search cursors a reader remembers. A handful of interleaved
+#: searches is the realistic case; older ones are simply forgotten, which costs
+#: a restart rather than correctness.
+_CURSOR_MEMORY = 32
+
 
 @dataclass(slots=True)
 class HistoryPage:
@@ -37,6 +42,10 @@ class HistoryPage:
     next_offset_id: int | None = None
     has_more: bool = False
     total_available: int | None = None
+    #: Global search only: the other two thirds of its cursor. ``offset_id`` is
+    #: meaningless on its own there, because message ids are per-chat.
+    next_offset_rate: int | None = None
+    next_offset_peer: int | str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -46,6 +55,10 @@ class HistoryPage:
         }
         if self.next_offset_id is not None:
             out["next_offset_id"] = self.next_offset_id
+        if self.next_offset_rate is not None:
+            out["next_offset_rate"] = self.next_offset_rate
+        if self.next_offset_peer is not None:
+            out["next_offset_peer"] = self.next_offset_peer
         if self.total_available is not None:
             out["total_available"] = self.total_available
         return out
@@ -56,6 +69,7 @@ class HistoryReader:
 
     def __init__(self, gateway: TelegramGateway) -> None:
         self._gateway = gateway
+        self._global_cursors: dict[tuple[str, int], tuple[int, int | str]] = {}
 
     async def read(
         self,
@@ -115,6 +129,8 @@ class HistoryReader:
         *,
         limit: int = DEFAULT_PAGE_SIZE,
         offset_id: int = 0,
+        offset_rate: int = 0,
+        offset_peer: int | str | None = None,
         min_date: str | None = None,
         max_date: str | None = None,
         context: CallContext | None = None,
@@ -123,16 +139,29 @@ class HistoryReader:
 
         Uses the raw ``messages.SearchGlobal`` request because the friendly
         layer has no equivalent — a good example of why raw TL access matters.
+
+        Its cursor has three parts: the previous slice's ``next_rate``, the last
+        message's peer, and its id. Supplying only the id restarts at the first
+        page, so the other two are remembered here against the id they belong to
+        — that keeps callers that thread a single offset (the tools do) correct.
         """
         page_size = _clamp(limit)
+        search_key = f"{query}|{min_date or ''}|{max_date or ''}"
+        rate, peer = int(offset_rate or 0), offset_peer
+        if offset_id and not (rate and peer is not None):
+            remembered = self._global_cursors.get((search_key, int(offset_id)))
+            if remembered is not None:
+                rate, peer = remembered
+
         arguments: dict[str, Any] = {
             "q": query,
             "filter": {"_": "InputMessagesFilterEmpty"},
             "min_date": _epoch(min_date),
             "max_date": _epoch(max_date),
-            "offset_rate": 0,
-            "offset_peer": {"_": "InputPeerEmpty"},
-            "offset_id": offset_id,
+            "offset_rate": rate,
+            # InputPeerEmpty is the "start of results" sentinel.
+            "offset_peer": peer if peer is not None else {"_": "InputPeerEmpty"},
+            "offset_id": int(offset_id),
             "limit": page_size,
         }
         result = await self._gateway.call(
@@ -142,9 +171,11 @@ class HistoryReader:
             projector=_project_messages_container,
         )
         payload = result.payload if isinstance(result.payload, dict) else {}
-        messages = payload.get("messages", [])
-        page = _page_from(messages, page_size, reverse=False)
+        page = _global_page_from(
+            payload.get("messages", []), page_size, next_rate=payload.get("next_rate")
+        )
         page.total_available = payload.get("total")
+        self._remember_cursor(search_key, page)
         return page
 
     async def search_in_chat(
@@ -184,6 +215,17 @@ class HistoryReader:
                 if not m.get("date") or parse_datetime(str(m["date"])) >= floor
             ]
         return page
+
+    def _remember_cursor(self, search_key: str, page: HistoryPage) -> None:
+        """Store the rate/peer halves of a global cursor against its offset id."""
+        if page.next_offset_id is None or page.next_offset_peer is None:
+            return
+        self._global_cursors[(search_key, page.next_offset_id)] = (
+            page.next_offset_rate or 0,
+            page.next_offset_peer,
+        )
+        while len(self._global_cursors) > _CURSOR_MEMORY:
+            self._global_cursors.pop(next(iter(self._global_cursors)))
 
     async def list_dialogs(
         self,
@@ -226,11 +268,39 @@ def _page_from(messages: list[Any], page_size: int, *, reverse: bool) -> History
     return HistoryPage(messages=rows, next_offset_id=next_offset, has_more=has_more)
 
 
+def _global_page_from(messages: list[Any], page_size: int, *, next_rate: Any) -> HistoryPage:
+    """Build a page for ``messages.searchGlobal``.
+
+    The cursor is the *last* row of the slice together with its peer and the
+    server's ``next_rate``; ids alone cannot order a result set that spans chats.
+    Without a peer the cursor cannot advance, and advertising one that cannot
+    advance makes a paginating caller re-read the same page forever, so the page
+    reports itself exhausted instead.
+    """
+    rows = [m for m in messages if isinstance(m, dict)]
+    page = HistoryPage(messages=rows)
+    if len(rows) < page_size:
+        return page
+
+    last = rows[-1]
+    last_id, last_peer = last.get("id"), last.get("chat_id")
+    if not isinstance(last_id, int) or not isinstance(last_peer, (int, str)):
+        return page
+
+    page.has_more = True
+    page.next_offset_id = last_id
+    page.next_offset_peer = last_peer
+    page.next_offset_rate = next_rate if isinstance(next_rate, int) else 0
+    return page
+
+
 def _project_messages_container(result: Any) -> dict[str, Any]:
     """Flatten a ``messages.Messages``-family response into a compact dict."""
     return {
         "messages": [message_to_dict(m) for m in getattr(result, "messages", None) or []],
         "total": getattr(result, "count", None),
+        # The rate half of a global-search cursor; absent on a non-sliced response.
+        "next_rate": getattr(result, "next_rate", None),
         "chats": [
             {"id": getattr(c, "id", None), "title": getattr(c, "title", None)}
             for c in (getattr(result, "chats", None) or [])[:100]

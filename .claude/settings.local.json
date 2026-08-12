@@ -70,7 +70,16 @@
       "Bash(./hermes bogus *)",
       "Bash(./hermes test *)",
       "Bash(.venv/bin/python -V)",
-      "Bash(.venv/bin/python -c \"print\\('ok'\\)\")"
+      "Bash(.venv/bin/python -c \"print\\('ok'\\)\")",
+      "Bash(.venv/bin/pytest -q -p no:randomly tests/test_telegram_layer.py -x -q)",
+      "Bash(.venv/bin/pytest -q -p no:randomly tests/test_telegram_layer.py)",
+      "Bash(.venv/bin/pytest -q -p no:randomly tests/test_permissions.py tests/test_gateway.py tests/test_integration.py tests/test_config.py)",
+      "Bash(.venv/bin/pytest -q -p no:randomly \"tests/test_telegram_layer.py::TestLoginTimeout\")",
+      "Bash(.venv/bin/pytest -q -p no:randomly \"tests/test_telegram_layer.py::TestLoginTimeout::test_a_prompt_answered_in_time_is_used\")",
+      "Bash(git stash *)",
+      "Bash(.venv/bin/pytest -q -p no:randomly tests/test_gateway.py -k suspicious)",
+      "Bash(.venv/bin/pytest -q -p no:randomly tests/test_permissions.py)",
+      "Bash(.venv/bin/pytest -q -p no:randomly \"tests/test_permissions.py::TestAuthorisation::test_reads_allowed_writes_confirmed_by_default\")"
     ]
   }
 }

@@ -120,7 +120,30 @@ while page.has_more:
 ```
 
 Global search has no friendly-layer equivalent, so `search_global` uses raw
-`messages.SearchGlobal` — a good illustration of why raw access matters.
+`messages.SearchGlobal` — a good illustration of why raw access matters, and of
+why raw access needs care. Its cursor is not one value but three: `offset_rate`
+(taken from the previous slice's `next_rate`), `offset_peer` (the last row's chat)
+and `offset_id`. Message ids are per-chat, so an `offset_id` alone is meaningless
+across a global result set — supplying only that re-returns the first page, and an
+agent paginating on it duplicates results forever.
+
+```python
+page = await history.search_global("migration", limit=50)
+while page.has_more:
+    page = await history.search_global(
+        "migration",
+        limit=50,
+        offset_id=page.next_offset_id,
+        offset_rate=page.next_offset_rate,
+        offset_peer=page.next_offset_peer,
+    )
+```
+
+The curated tool layer threads only `offset_id`, so `HistoryReader` remembers the
+other two halves against the id it handed out (bounded, keyed by query and date
+bounds) and an `offset_id`-only caller still advances. When the peer cannot be
+derived, no cursor is advertised and `has_more` stays `False` — a caller that
+cannot advance is told so rather than being handed a cursor that silently loops.
 
 ## Connection lifecycle
 
