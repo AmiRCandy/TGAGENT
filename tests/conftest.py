@@ -75,31 +75,18 @@ def permissions(settings: Settings) -> PermissionEngine:
 
 
 @pytest.fixture
-def gateway(
-    manager: FakeClientManager,
-    permissions: PermissionEngine,
-    confirmations: RecordingConfirmation,
-    settings: Settings,
-) -> TelegramGateway:
-    return TelegramGateway(
-        manager,  # type: ignore[arg-type]
-        permissions=permissions,
-        confirmations=confirmations,
-        audit=None,
-        permission_settings=settings.permissions,
-        logging_settings=settings.logging,
-        features=settings.features,
-    )
-
-
-@pytest.fixture
-async def audited_gateway(
+async def gateway(
     manager: FakeClientManager,
     permissions: PermissionEngine,
     confirmations: RecordingConfirmation,
     settings: Settings,
     storage: SQLiteStorage,
 ) -> TelegramGateway:
+    """A gateway wired exactly as the application wires it, auditing included.
+
+    Auditing is deliberately not optional here: a fixture that omits it would
+    let an audit regression pass every test.
+    """
     return TelegramGateway(
         manager,  # type: ignore[arg-type]
         permissions=permissions,

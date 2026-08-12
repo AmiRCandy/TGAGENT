@@ -51,9 +51,11 @@ anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.40"]
 # Rust-accelerated MTProto crypto; large speedup on media transfer.
 speedups = ["cryptg>=0.4"]
-all = ["tgagent[anthropic,openai,speedups]"]
+# SOCKS/HTTP proxy support for the MTProto connection.
+proxy = ["PySocks>=1.7"]
+all = ["tgagent[anthropic,openai,speedups,proxy]"]
 dev = [
-  "tgagent[anthropic,openai]",
+  "tgagent[anthropic,openai,proxy]",
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
   "pytest-cov>=5.0",

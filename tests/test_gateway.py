@@ -286,9 +286,9 @@ class TestOutputSanitisation:
 
 class TestAuditing:
     async def test_successful_calls_are_recorded(
-        self, audited_gateway: TelegramGateway, storage: SQLiteStorage
+        self, gateway: TelegramGateway, storage: SQLiteStorage
     ) -> None:
-        await audited_gateway.call(
+        await gateway.call(
             "get_dialogs", {"limit": 2}, context=CallContext(run_id="run-1", origin="tool")
         )
         entries = await storage.audit.list_recent(run_id="run-1")
@@ -298,10 +298,10 @@ class TestAuditing:
         assert entries[0].succeeded
 
     async def test_denials_are_recorded(
-        self, audited_gateway: TelegramGateway, storage: SQLiteStorage
+        self, gateway: TelegramGateway, storage: SQLiteStorage
     ) -> None:
         with pytest.raises(PermissionDenied):
-            await audited_gateway.call(
+            await gateway.call(
                 "auth.LogOut", {}, context=CallContext(run_id="run-2")
             )
         entries = await storage.audit.list_recent(run_id="run-2")
@@ -310,13 +310,13 @@ class TestAuditing:
 
     async def test_failures_are_recorded(
         self,
-        audited_gateway: TelegramGateway,
+        gateway: TelegramGateway,
         storage: SQLiteStorage,
         fake_client: FakeTelegramClient,
     ) -> None:
         fake_client.next_error = errors.RPCError(request=None, message="NOPE")
         with pytest.raises(TelegramCallError):
-            await audited_gateway.call(
+            await gateway.call(
                 "get_messages", {"entity": "@a"}, context=CallContext(run_id="run-3")
             )
         entries = await storage.audit.list_recent(run_id="run-3")
@@ -324,10 +324,10 @@ class TestAuditing:
         assert entries[0].error
 
     async def test_arguments_are_not_stored_by_default(
-        self, audited_gateway: TelegramGateway, storage: SQLiteStorage
+        self, gateway: TelegramGateway, storage: SQLiteStorage
     ) -> None:
         # Message text is user data; only a digest is kept unless explicitly enabled.
-        await audited_gateway.call(
+        await gateway.call(
             "get_messages",
             {"entity": "@alex", "limit": 1},
             context=CallContext(run_id="run-4"),
@@ -337,9 +337,9 @@ class TestAuditing:
         assert entry.argument_digest
 
     async def test_sandbox_origin_is_distinguishable(
-        self, audited_gateway: TelegramGateway, storage: SQLiteStorage
+        self, gateway: TelegramGateway, storage: SQLiteStorage
     ) -> None:
-        await audited_gateway.call(
+        await gateway.call(
             "get_dialogs", {"limit": 1}, context=CallContext(run_id="run-5", origin="sandbox")
         )
         assert (await storage.audit.list_recent(run_id="run-5"))[0].origin == "sandbox"

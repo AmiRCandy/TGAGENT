@@ -43,29 +43,33 @@ def parse_proxy(url: str) -> tuple[Any, ...] | None:
     """
     if not url:
         return None
-    try:
-        import socks  # PySocks, pulled in by telethon's extras
-    except ImportError as exc:  # pragma: no cover
-        raise ConfigError(
-            "A proxy is configured but PySocks is not installed. "
-            "Install it with `pip install PySocks`."
-        ) from exc
 
+    # Validate the URL before importing PySocks, so a typo reports the typo
+    # rather than a missing optional dependency.
     parsed = urlparse(url)
-    kinds = {
-        "socks5": socks.SOCKS5,
-        "socks5h": socks.SOCKS5,
-        "socks4": socks.SOCKS4,
-        "http": socks.HTTP,
-        "https": socks.HTTP,
-    }
-    kind = kinds.get(parsed.scheme.lower())
-    if kind is None:
+    scheme = parsed.scheme.lower()
+    if scheme not in ("socks5", "socks5h", "socks4", "http", "https"):
         raise ConfigError(
             f"Unsupported proxy scheme {parsed.scheme!r}. Use socks5://, socks4://, or http://."
         )
     if not parsed.hostname or not parsed.port:
         raise ConfigError("A proxy URL must include both host and port.")
+
+    try:
+        import socks  # PySocks
+    except ImportError as exc:
+        raise ConfigError(
+            "A proxy is configured but PySocks is not installed. Install the extra "
+            'with `pip install "tgagent[proxy]"`.'
+        ) from exc
+
+    kind = {
+        "socks5": socks.SOCKS5,
+        "socks5h": socks.SOCKS5,
+        "socks4": socks.SOCKS4,
+        "http": socks.HTTP,
+        "https": socks.HTTP,
+    }[scheme]
 
     if parsed.username:
         return (kind, parsed.hostname, parsed.port, True, parsed.username, parsed.password or "")

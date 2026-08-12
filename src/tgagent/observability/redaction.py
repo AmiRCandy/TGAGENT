@@ -28,15 +28,17 @@ PLACEHOLDER: Final = "***REDACTED***"
 _MIN_SECRET_LEN: Final = 6
 
 _PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
-    # Telegram bot token: 8-10 digits, colon, 35 base64url chars.
-    ("bot_token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
+    # Telegram bot token: numeric id, colon, base64url secret. The secret is
+    # conventionally 35 characters but the range keeps this robust to change.
+    ("bot_token", re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,45}\b")),
     # Telethon StringSession: version char '1' + base64 of ~350 bits.
     ("session_string", re.compile(r"\b1[A-Za-z0-9+/=_-]{300,}\b")),
     # OpenAI-style and Anthropic-style API keys.
     ("api_key", re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b")),
     ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b")),
-    # HTTP auth headers.
-    ("bearer", re.compile(r"(?i)\b(?:bearer|token|x-api-key)\s*[:=]\s*\S{12,}")),
+    # HTTP auth headers. The separator may be a colon, an equals sign, or just
+    # whitespace ("Authorization: Bearer <token>").
+    ("bearer", re.compile(r"(?i)\b(?:bearer|x-api-key|authorization)\b[\s:=]+\S{12,}")),
     # Explicit key=value assignments for well-known secret names.
     (
         "assignment",
