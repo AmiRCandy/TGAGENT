@@ -139,6 +139,8 @@ class SubprocessSandbox:
             stderr = await _drain(process.stderr)
             if stderr.strip():
                 log.warning("sandbox.stderr", text=stderr[:2000])
+            if notes := done.get("notes"):
+                log.debug("sandbox.notes", notes=notes)
 
             return ExecutionResult(
                 ok=bool(done.get("ok")),

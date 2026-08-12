@@ -32,6 +32,7 @@ from __future__ import annotations
 import builtins
 import io
 import json
+import linecache
 import os
 import sys
 import traceback
