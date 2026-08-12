@@ -352,6 +352,81 @@ class LoggingSettings(BaseModel):
     log_call_arguments: bool = Field(default=False)
 
 
+class TelegramControlSettings(BaseModel):
+    """Driving the agent from inside Telegram itself.
+
+    When the bridge is listening, typing ``agent summarise the last 20 messages``
+    in any chat hands that instruction to the agent, together with the chat and
+    message it was typed in, and the answer comes back as a reply.
+
+    The defaults are the conservative reading of that idea: only the account
+    owner's own messages count as commands, and the whole thing is off until it
+    is turned on. See ``docs/telegram-control.md``.
+    """
+
+    #: Start the bridge as part of ``tgagent serve``. ``tgagent listen`` starts
+    #: it regardless — this flag is about the unattended daemon.
+    enabled: bool = Field(default=False)
+
+    #: The word that turns a message into an instruction. Matched
+    #: case-insensitively at the very start of the message, and it must be
+    #: followed by the instruction, so ordinary sentences do not trigger.
+    trigger: str = Field(default="agent", min_length=1, max_length=32)
+
+    #: Treat the account owner's own outgoing messages as commands. This is the
+    #: normal mode: you type in a chat you are already in.
+    respond_to_self: bool = Field(default=True)
+
+    #: Other people whose messages count as commands — ``@username`` or numeric
+    #: id. Empty means nobody else, which is the safe default: anyone on this
+    #: list can spend your tokens and act as your account.
+    allowed_senders: list[str] = Field(default_factory=list)
+
+    #: If non-empty, commands are only accepted in these chats.
+    allowed_chats: list[str] = Field(default_factory=list)
+    #: Chats where commands are never accepted. Takes precedence.
+    ignored_chats: list[str] = Field(default_factory=list)
+
+    #: Send the answer as a reply to the command, rather than a loose message.
+    reply_to_command: bool = Field(default=True)
+    #: Show the "typing…" indicator while a run is in progress.
+    typing_indicator: bool = Field(default=True)
+
+    #: Include the message the command replied to, as fenced untrusted context.
+    #: This is what makes ``agent translate this`` work.
+    include_reply_context: bool = Field(default=True)
+    reply_context_chars: int = Field(default=2000, ge=0, le=20_000)
+
+    #: Telegram's own hard limit is 4096 characters; longer answers are split.
+    max_reply_chars: int = Field(default=3800, ge=200, le=4096)
+
+    #: Ask for confirmations in the chat the command came from, by replying
+    #: ``yes`` or ``no``. With this off, a CONFIRM decision falls through to
+    #: ``permissions.non_interactive_decision`` (deny, by default).
+    confirm_in_chat: bool = Field(default=True)
+
+    #: Runs in flight across all chats. One chat runs one command at a time
+    #: regardless, because a chat's conversation history is a single thread.
+    max_concurrent_runs: int = Field(default=2, ge=1, le=16)
+
+    #: ``chat`` gives every chat its own conversation, so follow-ups in that
+    #: chat keep their context. ``global`` puts every chat in one conversation.
+    conversation_scope: Literal["chat", "global"] = Field(default="chat")
+
+    #: Hard ceiling on accepted commands per minute, across all chats. This is a
+    #: loop breaker, not a UX limit: if the agent ever sends a message that is
+    #: itself a command, this is what stops it running away.
+    max_commands_per_minute: int = Field(default=6, ge=1, le=120)
+
+    @field_validator("trigger")
+    @classmethod
+    def _clean_trigger(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("trigger must not be blank")
+        return v
+
+
 class SchedulerSettings(BaseModel):
     """Background task scheduling."""
 
@@ -398,6 +473,7 @@ class Settings(BaseSettings):
     media: MediaSettings = Field(default_factory=MediaSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
+    control: TelegramControlSettings = Field(default_factory=TelegramControlSettings)
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @model_validator(mode="after")

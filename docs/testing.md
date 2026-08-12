@@ -54,10 +54,12 @@ and asserts on what the runtime did with it:
 
 ```python
 async def test_tool_call_then_answer(settings):
-    provider = FakeProvider([
-        tool_call_completion("echo", {"text": "hi"}),
-        text_completion("Done."),
-    ])
+    provider = FakeProvider(
+        [
+            tool_call_completion("echo", {"text": "hi"}),
+            text_completion("Done."),
+        ]
+    )
     result = await build_runtime(provider, settings, [EchoTool()]).run("echo hi")
 
     assert result.answer == "Done."

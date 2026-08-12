@@ -131,6 +131,7 @@ def render(event):
     if event.kind is EventKind.TOOL_CALL_STARTED:
         print(f"→ {event.data['tool']}")
 
+
 result = await runtime.run("…", on_event=render)
 ```
 

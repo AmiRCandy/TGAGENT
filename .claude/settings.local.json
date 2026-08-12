@@ -33,7 +33,24 @@
       "Bash(python -m venv /tmp/cleanenv)",
       "Bash(/tmp/cleanenv/Scripts/python.exe -m pip install -q dist/tgagent-0.1.0-py3-none-any.whl)",
       "Bash(/tmp/cleanenv/Scripts/tgagent.exe version *)",
-      "Bash(TGAGENT_DATA_DIR=/tmp/cleandata /tmp/cleanenv/Scripts/tgagent.exe config check)"
+      "Bash(TGAGENT_DATA_DIR=/tmp/cleandata /tmp/cleanenv/Scripts/tgagent.exe config check)",
+      "Read(//usr/bin/**)",
+      "Bash(command -v uv pipx pip)",
+      "Bash(python -m venv .venv)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/ruff --version)",
+      "Bash(.venv/bin/ruff format *)",
+      "Bash(.venv/bin/ruff check *)",
+      "Bash(.venv/bin/python -m pytest -x -q -p no:randomly)",
+      "Bash(.venv/bin/pytest -q -p no:randomly)",
+      "Bash(.venv/bin/bandit -r src/tgagent -c pyproject.toml --skip B102,B307 -q)",
+      "Bash(.venv/bin/bandit -r src/tgagent -c pyproject.toml -q)",
+      "Bash(echo \"\\(bandit exit $?\\)\")",
+      "Bash(.venv/bin/mypy)",
+      "Bash(timeout 600 python -m pytest tests/ -x -q)",
+      "Bash(timeout 900 .venv/bin/python -m pytest tests/ -q)",
+      "Bash(python -c \"import croniter; print\\(croniter.__file__\\)\")",
+      "Bash(timeout 600 .venv/bin/python -m pytest -x -q)"
     ]
   }
 }

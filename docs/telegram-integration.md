@@ -32,13 +32,22 @@ the object invoked. This is what makes the full ~824-method surface reachable.
 
 ```python
 await gateway.call("get_messages", {"entity": "@alex", "limit": 50})
-await gateway.call("messages.Search", {
-    "peer": "@alex", "q": "migration",
-    "filter": {"_": "InputMessagesFilterEmpty"},
-    "min_date": "2026-01-01T00:00:00Z", "max_date": 0,
-    "offset_id": 0, "add_offset": 0, "limit": 50,
-    "max_id": 0, "min_id": 0, "hash": 0,
-})
+await gateway.call(
+    "messages.Search",
+    {
+        "peer": "@alex",
+        "q": "migration",
+        "filter": {"_": "InputMessagesFilterEmpty"},
+        "min_date": "2026-01-01T00:00:00Z",
+        "max_date": 0,
+        "offset_id": 0,
+        "add_offset": 0,
+        "limit": 50,
+        "max_id": 0,
+        "min_id": 0,
+        "hash": 0,
+    },
+)
 ```
 
 ## Argument coercion
@@ -105,7 +114,7 @@ The design assumes a history that never fits in context.
 - **Context compaction** as the backstop when a run still grows too large.
 
 ```python
-page = await history.read("@alex", limit=50, reverse=True)   # oldest first
+page = await history.read("@alex", limit=50, reverse=True)  # oldest first
 while page.has_more:
     page = await history.read("@alex", limit=50, offset_id=page.next_offset_id)
 ```

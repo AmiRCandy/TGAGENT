@@ -204,10 +204,10 @@ Never put secrets in the policy file — it is designed to be committed.
 ```python
 from tgagent.config import load_settings, Settings
 
-settings = load_settings()                       # environment + .env
-settings = load_settings(llm={"model": "x"})     # with overrides
+settings = load_settings()  # environment + .env
+settings = load_settings(llm={"model": "x"})  # with overrides
 
-settings = Settings(                             # fully explicit, no environment
+settings = Settings(  # fully explicit, no environment
     data_dir="/srv/tgagent",
     telegram={"api_id": 1, "api_hash": "…"},
     llm={"provider": "fake"},

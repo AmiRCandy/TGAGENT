@@ -74,9 +74,11 @@ python:         one program that resolves, paginates, filters, and returns 12 ro
 
 ```python
 msgs = tg.get_messages(entity="@alex", limit=500, offset_date="2026-02-01")
-hits = [m for m in msgs
-        if m.get("text") and "migration" in m["text"].lower()
-        and m["date"] >= "2026-01-01"]
+hits = [
+    m
+    for m in msgs
+    if m.get("text") and "migration" in m["text"].lower() and m["date"] >= "2026-01-01"
+]
 print(f"scanned {len(msgs)}, matched {len(hits)}")
 result = [{"id": m["id"], "date": m["date"], "text": m["text"][:200]} for m in hits]
 ```
@@ -89,8 +91,13 @@ The program runs with no client, no credentials, and no network — see
 ```python
 from tgagent.risk import RiskTier
 from tgagent.tools.base import (
-    ToolContext, ToolResult, object_schema, require, string_field,
+    ToolContext,
+    ToolResult,
+    object_schema,
+    require,
+    string_field,
 )
+
 
 class ArchiveChatTool:
     name = "telegram_archive_chat"
@@ -98,7 +105,7 @@ class ArchiveChatTool:
         "Move a chat to the archive folder. Reversible — it only changes how the "
         "chat is filed for this account, and nobody else is notified."
     )
-    risk_hint = RiskTier.REVERSIBLE          # advisory; the gateway decides
+    risk_hint = RiskTier.REVERSIBLE  # advisory; the gateway decides
     parameters = object_schema(
         {"peer": string_field("Chat to archive: @username or numeric id.")},
         required=["peer"],
@@ -150,7 +157,7 @@ the model can see is a tool it will try.
 ## Result handling
 
 ```python
-ToolResult(content="…")                                    # agent-trusted
+ToolResult(content="…")  # agent-trusted
 ToolResult.untrusted(content, source="telegram:chat/123")  # fenced by the runtime
 ToolResult.error("what went wrong and what to try instead")
 ```

@@ -28,9 +28,9 @@ calls made either way; capitalisation cannot be used to dodge a rule.
 like a read is classified `destructive`:
 
 ```python
-classify("messages.SomeBrandNewThing")   # → DESTRUCTIVE
-classify("obliterate_everything")        # → DESTRUCTIVE
-classify("messages.GetSomethingNew")     # → READ_ONLY  (read-shaped prefix)
+classify("messages.SomeBrandNewThing")  # → DESTRUCTIVE
+classify("obliterate_everything")  # → DESTRUCTIVE
+classify("messages.GetSomethingNew")  # → READ_ONLY  (read-shaped prefix)
 ```
 
 A future Telethon release cannot introduce a method that silently executes.

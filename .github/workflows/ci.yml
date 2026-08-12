@@ -111,9 +111,10 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Bandit (static analysis)
-        # The sandbox worker uses exec() by design; that file is reviewed by
-        # hand and by the isolation tests rather than by bandit.
-        run: bandit -r src/tgagent -c pyproject.toml --skip B102,B307 -q
+        # Suppressions live in [tool.bandit] in pyproject.toml, each with its
+        # reason, rather than as an inline --skip list that drifts out of sync
+        # with what a developer running bandit locally would see.
+        run: bandit -r src/tgagent -c pyproject.toml -q
 
       - name: pip-audit (known vulnerabilities)
         run: pip-audit --strict --desc

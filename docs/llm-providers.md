@@ -132,10 +132,12 @@ provider for reproducing a bug without credentials.
 ```python
 from tgagent.llm.providers.fake import FakeProvider, text_completion, tool_call_completion
 
-provider = FakeProvider([
-    tool_call_completion("telegram_list_dialogs", {"limit": 5}),
-    text_completion("You have 5 chats."),
-])
+provider = FakeProvider(
+    [
+        tool_call_completion("telegram_list_dialogs", {"limit": 5}),
+        text_completion("You have 5 chats."),
+    ]
+)
 
 result = await runtime.run("list my chats")
 assert provider.requests[0].system.startswith("You are tgagent")

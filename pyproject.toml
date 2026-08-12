@@ -177,3 +177,17 @@ exclude_lines = [
 # -------------------------------------------------------------- bandit ----
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
+# Ruff's `S` ruleset (selected above) implements every check listed here and runs
+# on every file, where suppressing one costs a per-site `# noqa` with a written
+# justification. Bandit is kept as a second opinion for the rules ruff does *not*
+# implement; annotating the overlap twice would only mean two comments to forget
+# to remove. Each skip below is a pattern this codebase uses deliberately:
+skips = [
+  "B101", # assert — invariants the type checker cannot express, never validation
+  "B102", # exec  — the sandbox worker runs agent code by design
+  "B108", # /tmp  — paths inside the container's tmpfs, not on the host
+  "B112", # try/except/continue — best-effort introspection of TL objects
+  "B307", # eval  — the sandbox worker, as above
+  "B311", # random — retry jitter, not cryptography
+  "B608", # SQL built from a class constant column list, never from input
+]
