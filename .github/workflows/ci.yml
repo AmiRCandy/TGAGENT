@@ -117,7 +117,20 @@ jobs:
         run: bandit -r src/tgagent -c pyproject.toml -q
 
       - name: pip-audit (known vulnerabilities)
-        run: pip-audit --strict --desc
+        # Audited from a frozen list rather than from the live environment,
+        # because the live environment contains tgagent itself — installed with
+        # `-e`, unpublished, and therefore unauditable. `--strict` (rightly) fails
+        # on any dependency it could not check, and `--skip-editable` does not
+        # help: a skipped dependency is still an unchecked one, so it fails too.
+        #
+        # `pip freeze --exclude-editable` drops just the project and emits the
+        # full pinned closure of everything else, so `--no-deps` audits exactly
+        # that set with nothing re-resolved and nothing silently unchecked.
+        run: |
+          set -euo pipefail
+          pip freeze --exclude-editable > requirements-audit.txt
+          echo "Auditing $(grep -c '' requirements-audit.txt) dependencies."
+          pip-audit --strict --desc --no-deps -r requirements-audit.txt
 
       - name: Secret hygiene
         # A committed session file or .env would be a live credential leak, so

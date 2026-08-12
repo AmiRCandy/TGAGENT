@@ -11,6 +11,35 @@
 
 ## Install
 
+### From a clone: one command
+
+If you have the repository, the installer asks for what it needs and gets you to a
+signed-in agent:
+
+```bash
+git clone https://github.com/tgagent/tgagent && cd tgagent
+./install.sh
+```
+
+It creates `./.venv`, installs the project with development extras, prompts for
+your Telegram `api_id`/`api_hash` and a model provider — writing them into `.env`
+with mode `600` — verifies the result with `tgagent config check`, and offers to
+sign in. Nothing is overwritten without asking, so running it again is safe: it
+reports what is already configured and offers to keep it.
+
+Secrets are read without echoing, and written by a Python helper rather than
+`sed`, so an API key containing `&`, `/`, or `"` lands intact instead of becoming
+a confusing authentication error later.
+
+Without a terminal (CI, a provisioning script) it installs the environment, seeds
+`.env`, and stops rather than blocking on a prompt.
+
+`./install.sh` is a two-line alias for `./hermes install`; `./hermes` is the same
+script's other commands — `check`, `listen`, `deploy`, `logs`. See
+[Deployment](deployment.md).
+
+### As a package
+
 ```bash
 # Anthropic (the default provider)
 pip install "tgagent[anthropic]"

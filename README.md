@@ -92,13 +92,16 @@ Full detail: [security model](docs/security.md) · [threat model](docs/threat-mo
 ## Quick start
 
 ```bash
-./hermes setup                            # venv, dependencies, .env
-./hermes doctor                           # tells you what is still missing
-./hermes login                            # phone → code → 2FA password
+git clone https://github.com/tgagent/tgagent && cd tgagent
+./install.sh                              # asks for credentials, signs you in
 ./hermes listen                           # now talk to it from Telegram
 ```
 
-Or without the script, if you prefer:
+`./install.sh` builds `./.venv`, prompts for your Telegram `api_id`/`api_hash` and
+a model provider, writes them to a `600`-mode `.env`, and offers to sign in. Run it
+again any time — it keeps what is already there unless you say otherwise.
+
+Or do it by hand, if you prefer:
 
 ```bash
 pip install "tgagent[anthropic]"          # or [openai], or [all]

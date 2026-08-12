@@ -4,9 +4,8 @@
 #          tgagent. Named for the messenger: it carries things, it does not
 #          decide anything.
 #
+#   ./hermes install         from a clean checkout to a signed-in agent
 #   ./hermes                 what you can do
-#   ./hermes setup           venv + dependencies + .env
-#   ./hermes login           sign in to Telegram (interactive, once)
 #   ./hermes listen          take instructions from your Telegram chats
 #   ./hermes check           everything CI checks, in CI's order
 #
@@ -57,6 +56,78 @@ confirm() {
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
+confirm_default_yes() {
+  local reply
+  printf '%s%s [Y/n] %s' "$C_YELLOW" "$1" "$C_RESET"
+  read -r reply || return 1
+  [[ -z "$reply" || "$reply" =~ ^[Yy]$ ]]
+}
+
+interactive() { [[ -t 0 ]]; }
+
+# ------------------------------------------------------------------ prompts ----
+# ask <variable> <question> [default]        — visible answer
+# ask_secret <variable> <question>           — answer is not echoed
+#
+# Both leave the variable untouched and return 1 on EOF, so a piped or
+# non-interactive run degrades to "skip this" rather than looping on empty input.
+ask() {
+  local __var="$1" question="$2" default="${3:-}" reply
+  if [[ -n "$default" ]]; then
+    printf '%s  %s [%s]: %s' "$C_CYAN" "$question" "$default" "$C_RESET"
+  else
+    printf '%s  %s: %s' "$C_CYAN" "$question" "$C_RESET"
+  fi
+  read -r reply || return 1
+  printf -v "$__var" '%s' "${reply:-$default}"
+}
+
+ask_secret() {
+  local __var="$1" question="$2" reply
+  printf '%s  %s (not echoed): %s' "$C_CYAN" "$question" "$C_RESET"
+  read -rs reply || return 1
+  printf '\n'
+  printf -v "$__var" '%s' "$reply"
+}
+
+# Read one value out of .env, ignoring commented lines.
+env_get() {
+  [[ -f "$ENV_FILE" ]] || return 1
+  local line
+  line="$(grep -m1 -E "^[[:space:]]*$1=" "$ENV_FILE" 2>/dev/null)" || return 1
+  printf '%s' "${line#*=}"
+}
+
+# Set one value in .env, in place.
+#
+# Done in Python rather than with `sed` on purpose: an api_hash or API key is
+# arbitrary text, and building a sed expression around arbitrary text is how you
+# end up with a mangled credential and a confusing authentication error. This also
+# uncomments a commented-out key rather than appending a duplicate below it.
+env_set() {
+  local key="$1" value="$2"
+  KEY="$key" VALUE="$value" ENV_PATH="$ENV_FILE" "$PY" - <<'PYTHON'
+import os
+import re
+from pathlib import Path
+
+key, value, path = os.environ["KEY"], os.environ["VALUE"], Path(os.environ["ENV_PATH"])
+lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+pattern = re.compile(rf"^(\s*#\s*)?{re.escape(key)}=")
+
+for index, line in enumerate(lines):
+    if pattern.match(line):
+        lines[index] = f"{key}={value}\n"
+        break
+else:
+    if lines and not lines[-1].endswith("\n"):
+        lines.append("\n")
+    lines.append(f"{key}={value}\n")
+
+path.write_text("".join(lines), encoding="utf-8")
+PYTHON
+}
+
 # ------------------------------------------------------------ prerequisites ----
 find_python() {
   # Newest supported interpreter wins, so a machine with several gets the best
@@ -87,7 +158,11 @@ tg() {
 }
 
 # --------------------------------------------------------------- commands -----
-cmd_setup() {
+# The environment only. Deliberately says nothing about what to do next, because
+# `install` calls this and then does the next thing itself — advice to go and fill
+# in .env, printed immediately before being asked for the same values, reads as a
+# script that does not know what it is doing.
+_setup_environment() {
   local python
   python="$(find_python)" || die "Python 3.$MIN_PY_MINOR or newer is required but was not found."
   step "Using $($python --version)"
@@ -104,18 +179,172 @@ cmd_setup() {
 
   if [[ ! -f "$ENV_FILE" ]]; then
     cp "$ROOT/.env.example" "$ENV_FILE"
-    # The file will hold an api_hash and a model API key.
+    # The file is about to hold an api_hash and a model API key.
     chmod 600 "$ENV_FILE"
     ok "Created .env from .env.example"
-    warn "Fill in TGAGENT_TELEGRAM__API_ID, __API_HASH and TGAGENT_LLM__API_KEY before continuing."
-    hint "api_id / api_hash: https://my.telegram.org/apps"
   else
     ok ".env already present, left untouched"
   fi
+}
 
+cmd_setup() {
+  _setup_environment
   printf '\n'
   ok "Ready."
-  hint "next: ./hermes doctor   then ./hermes login   then ./hermes listen"
+  if [[ -z "$(env_get TGAGENT_TELEGRAM__API_HASH || true)" ]]; then
+    warn "TGAGENT_TELEGRAM__API_ID, __API_HASH and TGAGENT_LLM__API_KEY are still blank."
+    hint "api_id / api_hash: https://my.telegram.org/apps"
+    hint "or let the installer ask you for them: ./hermes install"
+  else
+    hint "next: ./hermes doctor   then ./hermes login   then ./hermes listen"
+  fi
+}
+
+cmd_install() {
+  printf '%stgagent installer%s\n' "$C_BOLD" "$C_RESET"
+  printf '%sThree steps: dependencies, credentials, sign-in. Ctrl-C is safe at any point.%s\n\n' \
+    "$C_DIM" "$C_RESET"
+
+  _setup_environment
+  printf '\n'
+
+  if ! interactive; then
+    warn "Not attached to a terminal, so credentials were not collected."
+    hint "Set them in .env, then: ./hermes login && ./hermes listen"
+    return 0
+  fi
+
+  _install_configure_telegram
+  _install_configure_llm
+  chmod 600 "$ENV_FILE"
+
+  printf '\n'
+  step "Checking the result"
+  if tg config check; then
+    ok "Configuration is complete."
+  else
+    warn "Something is still missing above. Edit .env and re-run ./hermes install."
+    return 1
+  fi
+
+  printf '\n'
+  if confirm_default_yes "Sign in to Telegram now?"; then
+    printf '\n'
+    cmd_login || {
+      warn "Sign-in did not complete. Run ./hermes login when you are ready."
+      return 1
+    }
+  else
+    hint "Sign in later with: ./hermes login"
+    return 0
+  fi
+
+  printf '\n'
+  ok "Installed."
+  printf '\n'
+  printf 'Start it in this terminal:      %s./hermes listen%s\n' "$C_BOLD" "$C_RESET"
+  printf 'Or install it as a service:     %s./hermes deploy%s\n' "$C_BOLD" "$C_RESET"
+  printf '\nThen, in any Telegram chat:     %s%s what did I miss today?%s\n' \
+    "$C_BOLD" "$(env_get TGAGENT_CONTROL__TRIGGER || printf 'agent')" "$C_RESET"
+}
+
+_install_configure_telegram() {
+  step "Telegram credentials"
+  hint "From https://my.telegram.org/apps — sign in with the account the agent will use,"
+  hint "then 'API development tools'. These identify the app, not the account."
+  printf '\n'
+
+  local existing api_id api_hash phone attempt
+  existing="$(env_get TGAGENT_TELEGRAM__API_ID || true)"
+  if [[ -n "$existing" && "$existing" != "0" ]]; then
+    ok "api_id already set to $existing"
+    if ! confirm "Replace the stored Telegram credentials?"; then
+      return 0
+    fi
+  fi
+
+  for attempt in 1 2 3; do
+    ask api_id "api_id (digits only)" || return 0
+    [[ "$api_id" =~ ^[0-9]+$ ]] && break
+    warn "api_id is a number, e.g. 1234567. ($attempt of 3)"
+    api_id=""
+  done
+  [[ -n "${api_id:-}" ]] || {
+    warn "Skipping Telegram credentials."
+    return 0
+  }
+
+  for attempt in 1 2 3; do
+    ask_secret api_hash "api_hash" || return 0
+    [[ "$api_hash" =~ ^[0-9a-fA-F]{32}$ ]] && break
+    warn "api_hash is 32 hexadecimal characters. ($attempt of 3)"
+    api_hash=""
+  done
+  [[ -n "${api_hash:-}" ]] || {
+    warn "Skipping Telegram credentials."
+    return 0
+  }
+
+  env_set TGAGENT_TELEGRAM__API_ID "$api_id"
+  env_set TGAGENT_TELEGRAM__API_HASH "$api_hash"
+
+  # Optional: `tgagent login` prompts for it if it is absent.
+  ask phone "phone number in E.164 form, e.g. +15551234567 (optional)" || true
+  if [[ -n "${phone:-}" && "$phone" =~ ^\+[0-9]{7,15}$ ]]; then
+    env_set TGAGENT_TELEGRAM__PHONE "$phone"
+  elif [[ -n "${phone:-}" ]]; then
+    warn "That is not E.164 format; leaving it unset. login will ask you."
+  fi
+  ok "Telegram credentials stored in .env (mode 600)"
+}
+
+_install_configure_llm() {
+  printf '\n'
+  step "Model provider"
+
+  local existing_key choice provider model key base_url
+  existing_key="$(env_get TGAGENT_LLM__API_KEY || true)"
+  if [[ -n "$existing_key" ]]; then
+    ok "A model API key is already set"
+    if ! confirm "Replace the stored model provider settings?"; then
+      return 0
+    fi
+  fi
+
+  printf '    1) Anthropic        claude-opus-5\n'
+  printf '    2) OpenAI           gpt-5\n'
+  printf '    3) OpenRouter       any hosted model\n'
+  printf '    4) Local / other    any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio)\n'
+  ask choice "Which one" "1" || return 0
+
+  case "$choice" in
+  1) provider=anthropic model=claude-opus-5 ;;
+  2) provider=openai model=gpt-5 ;;
+  3) provider=openrouter model=anthropic/claude-opus-5 ;;
+  4) provider=openai-compatible model="" ;;
+  *)
+    warn "Unrecognised choice; leaving the provider as it is."
+    return 0
+    ;;
+  esac
+
+  ask model "model id" "$model" || return 0
+  env_set TGAGENT_LLM__PROVIDER "$provider"
+  [[ -n "${model:-}" ]] && env_set TGAGENT_LLM__MODEL "$model"
+
+  if [[ "$provider" == "openai-compatible" ]]; then
+    ask base_url "base URL" "http://localhost:11434/v1" || return 0
+    env_set TGAGENT_LLM__BASE_URL "$base_url"
+    hint "A local endpoint usually needs no key — leave it blank if so."
+  fi
+
+  ask_secret key "API key" || return 0
+  if [[ -n "${key:-}" ]]; then
+    env_set TGAGENT_LLM__API_KEY "$key"
+    ok "Provider set to $provider"
+  else
+    hint "No key stored. The provider's own environment variable will be used if set."
+  fi
 }
 
 cmd_check() {
@@ -132,8 +361,27 @@ cmd_check() {
   "$PY" -m pytest -q -p no:randomly "$@"
   step "bandit"
   "$VENV/bin/bandit" -r src/tgagent -c pyproject.toml -q
+  step "pip-audit"
+  cmd_audit_deps
   printf '\n'
   ok "Everything CI checks passes locally."
+}
+
+# Kept identical to the CI step, including the reason for the indirection: the
+# environment holds tgagent itself, installed editable and unpublished, which
+# --strict cannot audit and --skip-editable does not excuse.
+cmd_audit_deps() {
+  require_venv
+  # Cleaned up explicitly rather than with `trap … RETURN`: that trap runs after
+  # the function's `local` has gone out of scope, so under `set -u` it dies on an
+  # unbound variable *after* a successful audit — turning a pass into a failure.
+  local frozen status=0
+  frozen="$(mktemp)"
+  "$PY" -m pip freeze --exclude-editable >"$frozen"
+  hint "auditing $(grep -c '' "$frozen") dependencies"
+  "$VENV/bin/pip-audit" --strict --desc --no-deps -r "$frozen" || status=$?
+  rm -f "$frozen"
+  return "$status"
 }
 
 cmd_fix() {
@@ -367,7 +615,8 @@ cmd_help() {
 ${C_BOLD}hermes${C_RESET} — carry tgagent from a clean checkout to a running deployment.
 
 ${C_BOLD}Getting started${C_RESET}
-  setup              Create ./.venv, install dependencies, seed .env
+  ${C_BOLD}install${C_RESET}            Everything at once: dependencies, credentials, sign-in
+  setup              Just the environment: ./.venv, dependencies, a seeded .env
   doctor             Report what is configured, what is not, and what the sandbox isolates
   login              Sign in to Telegram (interactive, needed once)
 
@@ -380,7 +629,8 @@ ${C_BOLD}Using it${C_RESET}
   audit              Show recent security-relevant operations
 
 ${C_BOLD}Developing${C_RESET}
-  check [pytest…]    Everything CI checks: format, lint, types, tests, bandit
+  check [pytest…]    Everything CI checks: format, lint, types, tests, bandit, pip-audit
+  audit-deps         Just the dependency vulnerability scan
   fix                Apply formatting and auto-fixable lint
   test [pytest…]     Run the suite with your own arguments
 
@@ -400,8 +650,10 @@ main() {
   shift || true
 
   case "$command" in
+  install) cmd_install "$@" ;;
   setup) cmd_setup "$@" ;;
   check) cmd_check "$@" ;;
+  audit-deps) cmd_audit_deps "$@" ;;
   fix) cmd_fix "$@" ;;
   test) cmd_test "$@" ;;
   doctor) cmd_doctor "$@" ;;
