@@ -25,7 +25,15 @@
       "Bash(./.venv/Scripts/python.exe -m ruff check . --fix -q)",
       "Bash(./.venv/Scripts/python.exe -m ruff format --check .)",
       "Bash(./.venv/Scripts/python.exe -m mypy)",
-      "Bash(./.venv/Scripts/python.exe -m ruff check . -q --output-format=concise)"
+      "Bash(./.venv/Scripts/python.exe -m ruff check . -q --output-format=concise)",
+      "Bash(./.venv/Scripts/python.exe -m pip install -q build twine)",
+      "Bash(./.venv/Scripts/python.exe -m build)",
+      "Bash(./.venv/Scripts/python.exe -m twine check dist/*)",
+      "Bash(rm -rf /tmp/cleanenv)",
+      "Bash(python -m venv /tmp/cleanenv)",
+      "Bash(/tmp/cleanenv/Scripts/python.exe -m pip install -q dist/tgagent-0.1.0-py3-none-any.whl)",
+      "Bash(/tmp/cleanenv/Scripts/tgagent.exe version *)",
+      "Bash(TGAGENT_DATA_DIR=/tmp/cleandata /tmp/cleanenv/Scripts/tgagent.exe config check)"
     ]
   }
 }
