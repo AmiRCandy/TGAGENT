@@ -199,7 +199,9 @@ class FailingProvider:
     async def stream(self, **_kwargs: Any) -> AsyncIterator[StreamEvent]:
         self.calls += 1
         raise self.error
-        yield  # pragma: no cover - unreachable, makes this an async generator
+        # Never runs, but its presence is what makes this an async generator
+        # rather than a coroutine — which is what the protocol requires.
+        yield  # type: ignore[unreachable]  # pragma: no cover
 
     def estimate_tokens(self, text: str) -> int:
         return estimate_text_tokens(text)

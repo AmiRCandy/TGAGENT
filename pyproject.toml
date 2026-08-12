@@ -102,6 +102,9 @@ select = [
   "SIM",       # simplify
   "ASYNC",     # async correctness
   "S",         # bandit-style security
+  "BLE",       # no bare/blind except without justification
+  "SLF",       # no reaching into another object's privates
+  "PERF",      # obvious performance mistakes
   "RUF",       # ruff-specific
   "TID",       # tidy imports
   "PTH",       # prefer pathlib
@@ -136,7 +139,10 @@ show_error_codes = true
 plugins = []
 
 [[tool.mypy.overrides]]
-module = ["telethon.*", "croniter.*", "aiosqlite.*", "anthropic.*", "openai.*"]
+module = [
+  "telethon.*", "croniter.*", "aiosqlite.*",
+  "anthropic.*", "openai.*", "socks.*",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

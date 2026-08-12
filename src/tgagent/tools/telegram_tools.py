@@ -13,7 +13,7 @@ so the permission engine sees them exactly as it sees generated code.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 from tgagent.errors import ToolInputError
 from tgagent.risk import RiskTier
@@ -27,6 +27,7 @@ from tgagent.tools.base import (
     require,
     string_field,
 )
+
 
 #: Compact JSON: the model reads it fine and it costs far fewer tokens than
 #: indented output.
@@ -45,7 +46,7 @@ class _TelegramTool:
 
     name = ""
     description = ""
-    parameters: dict[str, Any] = object_schema({})
+    parameters: ClassVar[dict[str, Any]] = object_schema({})
     risk_hint = RiskTier.READ_ONLY
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
@@ -67,7 +68,9 @@ class ListDialogsTool(_TelegramTool):
                 "How many dialogs to return (1-200).", default=50, minimum=1, maximum=200
             ),
             "only_unread": boolean_field("Return only chats with unread messages.", default=False),
-            "archived": boolean_field("List archived chats instead of the main list.", default=False),
+            "archived": boolean_field(
+                "List archived chats instead of the main list.", default=False
+            ),
         }
     )
 
@@ -175,9 +178,7 @@ class SearchMessagesTool(_TelegramTool):
     parameters = object_schema(
         {
             "query": string_field("Text to search for."),
-            "peer": string_field(
-                "Restrict to one chat. Omit to search globally across all chats."
-            ),
+            "peer": string_field("Restrict to one chat. Omit to search globally across all chats."),
             "limit": integer_field("Results per page (1-200).", default=50),
             "offset_id": integer_field("Continue from this message id.", default=0),
             "min_date": string_field("Only messages on or after this ISO-8601 date."),
@@ -187,8 +188,17 @@ class SearchMessagesTool(_TelegramTool):
                 "Restrict to a media kind. One of: photo, video, document, audio, voice, "
                 "url, gif, music, chat_photo, round_video, sticker.",
                 enum=[
-                    "photo", "video", "document", "audio", "voice", "url", "gif",
-                    "music", "chat_photo", "round_video", "sticker",
+                    "photo",
+                    "video",
+                    "document",
+                    "audio",
+                    "voice",
+                    "url",
+                    "gif",
+                    "music",
+                    "chat_photo",
+                    "round_video",
+                    "sticker",
                 ],
             ),
         },
@@ -196,7 +206,7 @@ class SearchMessagesTool(_TelegramTool):
     )
 
     #: Friendly names → the Telethon filter classes.
-    _FILTERS = {
+    _FILTERS: ClassVar[dict[str, str]] = {
         "photo": "InputMessagesFilterPhotos",
         "video": "InputMessagesFilterVideo",
         "document": "InputMessagesFilterDocument",
@@ -249,9 +259,7 @@ class SearchMessagesTool(_TelegramTool):
             )
             source = "telegram:global-search"
 
-        return ToolResult.untrusted(
-            _json(page.to_dict()), source=source, count=len(page.messages)
-        )
+        return ToolResult.untrusted(_json(page.to_dict()), source=source, count=len(page.messages))
 
 
 class GetParticipantsTool(_TelegramTool):
@@ -454,9 +462,7 @@ class DeleteMessagesTool(_TelegramTool):
                 "description": "Ids of the messages to delete (max 100).",
                 "maxItems": 100,
             },
-            "revoke": boolean_field(
-                "Delete for everyone, not just this account.", default=True
-            ),
+            "revoke": boolean_field("Delete for everyone, not just this account.", default=True),
         },
         required=["peer", "message_ids"],
     )
@@ -551,8 +557,7 @@ class InvokeTool(_TelegramTool):
     parameters = object_schema(
         {
             "method": string_field(
-                "The method, e.g. 'messages.Search', 'channels.GetFullChannel', "
-                "or 'get_messages'."
+                "The method, e.g. 'messages.Search', 'channels.GetFullChannel', or 'get_messages'."
             ),
             "params": {
                 "type": "object",

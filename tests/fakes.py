@@ -180,8 +180,11 @@ class FakeTelegramClient:
         if peer in ("@missing", "missing"):
             raise ValueError("No user has that username")
         name = str(peer).lstrip("@")
-        return FakeEntity(12345, username=name if not str(peer).lstrip("-").isdigit() else None,
-                          first_name=name.title())
+        return FakeEntity(
+            12345,
+            username=name if not str(peer).lstrip("-").isdigit() else None,
+            first_name=name.title(),
+        )
 
     async def get_me(self) -> FakeEntity:
         return FakeEntity(1, username="owner", first_name="Owner")
@@ -215,7 +218,9 @@ class FakeTelegramClient:
         return [FakeEntity(1, username="alex"), FakeEntity(2, username="john")]
 
     # writes ----------------------------------------------------------------
-    async def send_message(self, entity: Any = None, message: str = "", **kwargs: Any) -> FakeMessage:
+    async def send_message(
+        self, entity: Any = None, message: str = "", **kwargs: Any
+    ) -> FakeMessage:
         self._maybe_raise()
         self.calls.append(("send_message", {"entity": entity, "message": message, **kwargs}))
         self.sent.append({"entity": entity, "message": message})
@@ -258,7 +263,12 @@ class FakeTelegramClient:
             return type(
                 "Result",
                 (),
-                {"messages": self.messages[:5], "count": len(self.messages), "chats": [], "users": []},
+                {
+                    "messages": self.messages[:5],
+                    "count": len(self.messages),
+                    "chats": [],
+                    "users": [],
+                },
             )()
         return type("Result", (), {"ok": True, "request": name})()
 
@@ -309,9 +319,7 @@ class RecordingConfirmation:
     async def confirm(self, request: ConfirmationRequest) -> ConfirmationOutcome:
         self.requests.append(request)
         approved = self.answers.get(request.method, self.approve)
-        return ConfirmationOutcome(
-            approved=approved, reason="scripted answer in tests"
-        )
+        return ConfirmationOutcome(approved=approved, reason="scripted answer in tests")
 
 
 # ---------------------------------------------------------------- misc ------

@@ -34,15 +34,39 @@ MAX_INLINE_BYTES: Final = 256
 
 #: Attributes never emitted, whatever the object. These are either credentials
 #: or huge blobs with no analytical value.
+# fmt: off  (columnar table: packed is far more readable than one item per line)
 _FORBIDDEN_ATTRS: Final = frozenset(
     {
-        "auth_key", "authkey", "key", "session", "_client", "client", "api_hash",
-        "api_id", "dc_options", "file_reference", "bytes", "salt", "server_salt",
-        "secret", "password", "srp_id", "srp_B", "g_a", "g_b", "nonce",
-        "_sender", "_input_sender", "_chat", "_input_chat", "_forward",
-        "_action_entities", "_client_ref",
+        "auth_key",
+        "authkey",
+        "key",
+        "session",
+        "_client",
+        "client",
+        "api_hash",
+        "api_id",
+        "dc_options",
+        "file_reference",
+        "bytes",
+        "salt",
+        "server_salt",
+        "secret",
+        "password",
+        "srp_id",
+        "srp_B",
+        "g_a",
+        "g_b",
+        "nonce",
+        "_sender",
+        "_input_sender",
+        "_chat",
+        "_input_chat",
+        "_forward",
+        "_action_entities",
+        "_client_ref",
     }
 )
+# fmt: on
 
 
 def truncate(text: str, limit: int = DEFAULT_MAX_STRING) -> str:
@@ -62,9 +86,7 @@ def to_jsonable(
     return _convert(value, max_depth, max_string, max_items, set())
 
 
-def _convert(
-    value: Any, depth: int, max_string: int, max_items: int, seen: set[int]
-) -> Any:
+def _convert(value: Any, depth: int, max_string: int, max_items: int, seen: set[int]) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
 
@@ -133,7 +155,7 @@ def _convert_object(
             continue
         try:
             item = getattr(obj, name)
-        except Exception:  # noqa: BLE001 - properties can raise; skip them
+        except Exception:  # noqa: BLE001, S112 - a raising property is skipped by design
             continue
         if item is None or callable(item):
             continue
@@ -147,15 +169,19 @@ def _attribute_names(obj: Any) -> list[str]:
         for klass in type(obj).__mro__:
             names.extend(getattr(klass, "__slots__", ()) or ())
     names.extend(getattr(obj, "__dict__", {}).keys())
-    # Preserve order, drop duplicates and privates.
+    # Preserve declaration order while dropping duplicates and privates.
     seen: set[str] = set()
-    return [n for n in names if not n.startswith("_") and not (n in seen or seen.add(n))]
+    ordered: list[str] = []
+    for name in names:
+        if name.startswith("_") or name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
 
 
 def _is_forbidden(name: Any) -> bool:
-    return isinstance(name, str) and (
-        name in _FORBIDDEN_ATTRS or name.lower() in _FORBIDDEN_ATTRS
-    )
+    return isinstance(name, str) and (name in _FORBIDDEN_ATTRS or name.lower() in _FORBIDDEN_ATTRS)
 
 
 # ------------------------------------------------------ compact projections --
@@ -233,7 +259,7 @@ def dialog_to_dict(dialog: Any) -> dict[str, Any]:
         "pinned": bool(getattr(dialog, "pinned", False)),
         "archived": bool(getattr(dialog, "archived", False)),
     }
-    if (mentions := getattr(dialog, "unread_mentions_count", 0)):
+    if mentions := getattr(dialog, "unread_mentions_count", 0):
         out["unread_mentions"] = mentions
     if entity is not None:
         if username := getattr(entity, "username", None):
@@ -257,9 +283,22 @@ def entity_to_dict(entity: Any) -> dict[str, Any]:
     kind = type(entity).__name__
     out: dict[str, Any] = {"_": kind, "id": getattr(entity, "id", None)}
     for attr in (
-        "username", "first_name", "last_name", "title", "phone", "bot", "verified",
-        "scam", "fake", "premium", "deleted", "megagroup", "broadcast", "restricted",
-        "participants_count", "about",
+        "username",
+        "first_name",
+        "last_name",
+        "title",
+        "phone",
+        "bot",
+        "verified",
+        "scam",
+        "fake",
+        "premium",
+        "deleted",
+        "megagroup",
+        "broadcast",
+        "restricted",
+        "participants_count",
+        "about",
     ):
         value = getattr(entity, attr, None)
         if value not in (None, False):
@@ -342,8 +381,20 @@ def extract_text_fields(payload: Any) -> list[str]:
 
 _TEXT_KEYS: Final = frozenset(
     {
-        "text", "message", "caption", "title", "name", "first_name", "last_name",
-        "about", "username", "file_name", "url", "from_name", "description", "bio",
+        "text",
+        "message",
+        "caption",
+        "title",
+        "name",
+        "first_name",
+        "last_name",
+        "about",
+        "username",
+        "file_name",
+        "url",
+        "from_name",
+        "description",
+        "bio",
         "service_action",
     }
 )

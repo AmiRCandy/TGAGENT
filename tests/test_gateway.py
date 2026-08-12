@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from telethon import errors
-
 from tests.fakes import FakeClientManager, FakeMessage, FakeTelegramClient, RecordingConfirmation
+
 from tgagent.config.settings import PermissionSettings, Settings
 from tgagent.errors import PermissionDenied, TelegramCallError, TelegramError
 from tgagent.risk import PolicyDecision, RiskTier
@@ -301,9 +301,7 @@ class TestAuditing:
         self, gateway: TelegramGateway, storage: SQLiteStorage
     ) -> None:
         with pytest.raises(PermissionDenied):
-            await gateway.call(
-                "auth.LogOut", {}, context=CallContext(run_id="run-2")
-            )
+            await gateway.call("auth.LogOut", {}, context=CallContext(run_id="run-2"))
         entries = await storage.audit.list_recent(run_id="run-2")
         assert entries[0].decision == PolicyDecision.DENY.value
         assert not entries[0].succeeded

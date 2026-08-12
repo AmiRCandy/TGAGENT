@@ -62,29 +62,43 @@ class DockerSandbox(SubprocessSandbox):
         assert self._docker is not None
         s = self._settings
 
+        # fmt: off  (columnar table: packed is far more readable than one item per line)
         argv = [
-            self._docker, "run",
+            self._docker,
+            "run",
             "--rm",
             "--interactive",
             f"--network={s.docker_network}",
             "--read-only",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            # Paths inside the container, not on the host.
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",  # noqa: S108
             f"--memory={s.max_memory_mb}m",
             f"--memory-swap={s.max_memory_mb}m",
             "--pids-limit=64",
             "--cap-drop=ALL",
-            "--security-opt", "no-new-privileges",
-            "--user", "65534:65534",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            "65534:65534",
             # The worker is mounted read-only; nothing else from the host is visible.
-            "--volume", f"{WORKER_PATH}:/opt/worker.py:ro",
-            "--workdir", "/tmp",
-            "--env", "PYTHONHASHSEED=0",
-            "--env", "PYTHONDONTWRITEBYTECODE=1",
-            "--env", "PYTHONUNBUFFERED=1",
+            "--volume",
+            f"{WORKER_PATH}:/opt/worker.py:ro",
+            "--workdir",
+            "/tmp",  # noqa: S108
+            "--env",
+            "PYTHONHASHSEED=0",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            "PYTHONUNBUFFERED=1",
             *s.docker_extra_args,
             s.docker_image,
-            "python", "-I", "/opt/worker.py",
+            "python",
+            "-I",
+            "/opt/worker.py",
         ]
+        # fmt: on
 
         log.debug("sandbox.docker_spawn", image=s.docker_image, network=s.docker_network)
         return await asyncio.create_subprocess_exec(

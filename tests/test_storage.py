@@ -144,10 +144,14 @@ class TestTasks:
     async def test_due_returns_only_enabled_and_overdue(self, storage: SQLiteStorage) -> None:
         now = datetime.now(UTC)
         await storage.tasks.create(
-            ScheduledTask(name="past", expression="* * * * *", next_run_at=now - timedelta(minutes=1))
+            ScheduledTask(
+                name="past", expression="* * * * *", next_run_at=now - timedelta(minutes=1)
+            )
         )
         await storage.tasks.create(
-            ScheduledTask(name="future", expression="* * * * *", next_run_at=now + timedelta(hours=1))
+            ScheduledTask(
+                name="future", expression="* * * * *", next_run_at=now + timedelta(hours=1)
+            )
         )
         await storage.tasks.create(
             ScheduledTask(
@@ -174,7 +178,10 @@ class TestTasks:
     async def test_claim_fails_for_a_disabled_task(self, storage: SQLiteStorage) -> None:
         now = datetime.now(UTC)
         task = ScheduledTask(
-            name="off", expression="* * * * *", enabled=False, next_run_at=now - timedelta(seconds=1)
+            name="off",
+            expression="* * * * *",
+            enabled=False,
+            next_run_at=now - timedelta(seconds=1),
         )
         await storage.tasks.create(task)
         assert not await storage.tasks.claim(task.id, now)

@@ -35,7 +35,8 @@ def _redaction_processor(
     _logger: Any, _method: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
     """Strip credentials from every field of every event."""
-    return dict(redact_value(dict(event_dict)))  # type: ignore[arg-type]
+    redacted: dict[str, Any] = redact_value(dict(event_dict))
+    return redacted
 
 
 def _drop_color_message(
@@ -145,7 +146,8 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a bound logger, configuring a sane default if nothing set up yet."""
     if not _configured:
         configure_logging()
-    return structlog.stdlib.get_logger(name)  # type: ignore[no-any-return]
+    logger: structlog.stdlib.BoundLogger = structlog.stdlib.get_logger(name)
+    return logger
 
 
 def bind_run_context(**values: Any) -> None:

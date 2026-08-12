@@ -6,11 +6,11 @@ import json
 from typing import Any
 
 import pytest
+from tests.fakes import FakeTelegramClient, RecordingConfirmation
 
-from tests.fakes import FakeMessage, FakeTelegramClient, RecordingConfirmation
 from tgagent.config.settings import Settings
 from tgagent.errors import PermissionDenied, ToolInputError
-from tgagent.risk import RiskTier, TrustLevel
+from tgagent.risk import TrustLevel
 from tgagent.storage.sqlite import SQLiteStorage
 from tgagent.telegram.schema import TelegramSchemaIndex
 from tgagent.tools import build_default_registry
@@ -139,9 +139,7 @@ class TestReadTools:
         )
         assert "messages" in json.loads(result.content)
 
-    async def test_search_rejects_an_unknown_media_filter(
-        self, tool_context: ToolContext
-    ) -> None:
+    async def test_search_rejects_an_unknown_media_filter(self, tool_context: ToolContext) -> None:
         with pytest.raises(ToolInputError, match="Valid values"):
             await SearchMessagesTool().run(
                 {"query": "x", "peer": "@a", "media_filter": "hologram"}, tool_context
@@ -162,9 +160,7 @@ class TestWriteTools:
         confirmations: RecordingConfirmation,
         fake_client: FakeTelegramClient,
     ) -> None:
-        result = await SendMessageTool().run(
-            {"peer": "@alex", "message": "hello"}, tool_context
-        )
+        result = await SendMessageTool().run({"peer": "@alex", "message": "hello"}, tool_context)
         assert json.loads(result.content)["sent"] is True
         assert len(confirmations.requests) == 1
         assert fake_client.sent == [{"entity": "@alex", "message": "hello"}]
@@ -176,13 +172,9 @@ class TestWriteTools:
         with pytest.raises(PermissionDenied):
             await SendMessageTool().run({"peer": "@alex", "message": "x"}, tool_context)
 
-    async def test_delete_requires_a_non_empty_id_list(
-        self, tool_context: ToolContext
-    ) -> None:
+    async def test_delete_requires_a_non_empty_id_list(self, tool_context: ToolContext) -> None:
         with pytest.raises(ToolInputError):
-            await DeleteMessagesTool().run(
-                {"peer": "@alex", "message_ids": []}, tool_context
-            )
+            await DeleteMessagesTool().run({"peer": "@alex", "message_ids": []}, tool_context)
 
     async def test_forward_rejects_more_than_the_api_allows(
         self, tool_context: ToolContext
@@ -226,18 +218,14 @@ class TestInvokeTool:
         with pytest.raises(ToolInputError, match="JSON object"):
             await InvokeTool().run({"method": "get_me", "params": "nope"}, tool_context)
 
-    async def test_policy_still_applies_to_raw_calls(
-        self, tool_context: ToolContext
-    ) -> None:
+    async def test_policy_still_applies_to_raw_calls(self, tool_context: ToolContext) -> None:
         # The generic escape hatch must not bypass classification.
         with pytest.raises(PermissionDenied):
             await InvokeTool().run({"method": "auth.LogOut", "params": {}}, tool_context)
 
 
 class TestApiSearchTool:
-    async def test_finds_a_known_method(
-        self, tool_context: ToolContext, tmp_path: Any
-    ) -> None:
+    async def test_finds_a_known_method(self, tool_context: ToolContext, tmp_path: Any) -> None:
         tool_context.schema = TelegramSchemaIndex(tmp_path / "schema.json")
         result = await ApiSearchTool().run({"query": "messages.Search"}, tool_context)
         assert "messages.Search" in result.content
@@ -262,9 +250,7 @@ class TestApiSearchTool:
 
 
 class TestMemoryTools:
-    async def test_write_then_read(
-        self, tool_context: ToolContext, storage: SQLiteStorage
-    ) -> None:
+    async def test_write_then_read(self, tool_context: ToolContext, storage: SQLiteStorage) -> None:
         tool_context.memory = storage.memory
         await MemoryWriteTool().run(
             {"key": "user.timezone", "value": "Europe/London"}, tool_context
@@ -290,9 +276,7 @@ class TestMemoryTools:
         result = await MemoryReadTool().run({"query": "k"}, tool_context)
         assert result.trust is TrustLevel.UNTRUSTED
 
-    async def test_disabled_memory_reports_cleanly(
-        self, tool_context: ToolContext
-    ) -> None:
+    async def test_disabled_memory_reports_cleanly(self, tool_context: ToolContext) -> None:
         tool_context.settings.features.memory = False
         result = await MemoryReadTool().run({"key": "x"}, tool_context)
         assert result.is_error

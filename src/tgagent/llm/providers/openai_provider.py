@@ -90,7 +90,7 @@ class OpenAICompatibleProvider:
         async def call() -> Any:
             try:
                 return await self._client.chat.completions.create(**request)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise self._translate_error(exc) from exc
 
         raw = await retry_async(
@@ -146,19 +146,23 @@ class OpenAICompatibleProvider:
                                 slot["name"] = fn.name
                             if fn.arguments:
                                 slot["arguments"] += fn.arguments
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise self._translate_error(exc) from exc
 
         parts: list[Any] = []
         if text := "".join(text_parts):
             parts.append(TextPart(text))
-        for slot in (tool_fragments[i] for i in sorted(tool_fragments)):
-            call = ToolCallPart(
-                id=slot["id"] or f"call_{len(parts)}",
+        # Reassembled in index order: fragments arrive interleaved.
+        calls = [
+            ToolCallPart(
+                id=slot["id"] or f"call_{index}",
                 name=slot["name"],
                 arguments=_parse_arguments(slot["arguments"], slot["name"]),
             )
-            parts.append(call)
+            for index, slot in enumerate(tool_fragments[i] for i in sorted(tool_fragments))
+        ]
+        parts.extend(calls)
+        for call in calls:
             yield StreamEvent(kind="tool_call", tool_call=call)
 
         completion = Completion(
@@ -264,14 +268,14 @@ class OpenAICompatibleProvider:
             msg = choice.message
             if getattr(msg, "content", None):
                 parts.append(TextPart(msg.content))
-            for call in getattr(msg, "tool_calls", None) or []:
-                parts.append(
-                    ToolCallPart(
-                        id=call.id,
-                        name=call.function.name,
-                        arguments=_parse_arguments(call.function.arguments, call.function.name),
-                    )
+            parts.extend(
+                ToolCallPart(
+                    id=call.id,
+                    name=call.function.name,
+                    arguments=_parse_arguments(call.function.arguments, call.function.name),
                 )
+                for call in getattr(msg, "tool_calls", None) or []
+            )
 
         return Completion(
             message=Message(role=Role.ASSISTANT, content=parts),
@@ -293,7 +297,9 @@ class OpenAICompatibleProvider:
             if exc.status_code >= 500:
                 return LLMTransientError(f"Server error {exc.status_code}: {exc}")
             if isinstance(exc, o.AuthenticationError):
-                return LLMConfigError("The provider rejected the API key. Set TGAGENT_LLM__API_KEY.")
+                return LLMConfigError(
+                    "The provider rejected the API key. Set TGAGENT_LLM__API_KEY."
+                )
             return LLMError(f"Request rejected ({exc.status_code}): {exc}")
         return LLMError(f"Request failed: {exc}")
 

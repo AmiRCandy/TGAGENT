@@ -7,11 +7,9 @@ policy, the sandbox marshalling over RPC, and the result coming back fenced.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
-
 from tests.fakes import (
     CollectingEvents,
     FakeClientManager,
@@ -19,6 +17,7 @@ from tests.fakes import (
     FakeTelegramClient,
     RecordingConfirmation,
 )
+
 from tgagent.agent.runtime import AgentRuntime, RuntimeDependencies
 from tgagent.config.settings import Settings
 from tgagent.llm.providers.fake import FakeProvider, text_completion, tool_call_completion
@@ -79,7 +78,9 @@ class TestReadFlow:
                 tool_call_completion(
                     "telegram_search_messages", {"query": "migration", "peer": "@alex"}
                 ),
-                text_completion("Two messages mention the migration: it started Monday and finished."),
+                text_completion(
+                    "Two messages mention the migration: it started Monday and finished."
+                ),
             ]
         )
         result = await _runtime(provider, settings, gateway, storage).run(
@@ -96,9 +97,7 @@ class TestReadFlow:
         provider = FakeProvider(
             [
                 tool_call_completion("telegram_list_dialogs", {"limit": 5}),
-                tool_call_completion(
-                    "telegram_read_history", {"peer": "@alex", "limit": 10}
-                ),
+                tool_call_completion("telegram_read_history", {"peer": "@alex", "limit": 10}),
                 text_completion("Read both."),
             ]
         )
@@ -131,9 +130,7 @@ class TestWriteFlow:
                 text_completion("Sent."),
             ]
         )
-        result = await _runtime(provider, settings, gateway, storage).run(
-            "tell Alex I'm on my way"
-        )
+        result = await _runtime(provider, settings, gateway, storage).run("tell Alex I'm on my way")
 
         assert result.succeeded
         assert len(confirmations.requests) == 1
@@ -155,9 +152,7 @@ class TestWriteFlow:
         )
         provider = FakeProvider(
             [
-                tool_call_completion(
-                    "telegram_send_message", {"peer": "@alex", "message": "hi"}
-                ),
+                tool_call_completion("telegram_send_message", {"peer": "@alex", "message": "hi"}),
                 text_completion("You declined, so I did not send it."),
             ]
         )
@@ -168,14 +163,15 @@ class TestWriteFlow:
         assert manager.client.sent == []
 
     async def test_unattended_run_cannot_send(
-        self, settings: Settings, gateway: TelegramGateway, storage: SQLiteStorage,
+        self,
+        settings: Settings,
+        gateway: TelegramGateway,
+        storage: SQLiteStorage,
         fake_client: FakeTelegramClient,
     ) -> None:
         provider = FakeProvider(
             [
-                tool_call_completion(
-                    "telegram_send_message", {"peer": "@alex", "message": "auto"}
-                ),
+                tool_call_completion("telegram_send_message", {"peer": "@alex", "message": "auto"}),
                 text_completion("I could not send it: no one was available to confirm."),
             ]
         )
@@ -213,9 +209,9 @@ class TestSandboxFlow:
             ]
         )
         sandbox = create_sandbox(settings.sandbox)
-        result = await _runtime(
-            provider, settings, gateway, storage, sandbox=sandbox
-        ).run("find project X mentions from Alex")
+        result = await _runtime(provider, settings, gateway, storage, sandbox=sandbox).run(
+            "find project X mentions from Alex"
+        )
 
         assert result.succeeded
         # The tool result the model saw must contain the program's output.
@@ -313,9 +309,9 @@ class TestDiscoveryFlow:
                 text_completion("Fetched the channel details."),
             ]
         )
-        result = await _runtime(
-            provider, settings, gateway, storage, schema=schema
-        ).run("what are the details of the Project X channel?")
+        result = await _runtime(provider, settings, gateway, storage, schema=schema).run(
+            "what are the details of the Project X channel?"
+        )
 
         assert result.succeeded
         assert any("GetFullChannel" in type(r).__name__ for r in fake_client.raw_calls)
@@ -331,9 +327,7 @@ class TestAuditTrail:
         provider = FakeProvider(
             [
                 tool_call_completion("telegram_list_dialogs", {"limit": 3}),
-                tool_call_completion(
-                    "telegram_send_message", {"peer": "@alex", "message": "hi"}
-                ),
+                tool_call_completion("telegram_send_message", {"peer": "@alex", "message": "hi"}),
                 text_completion("Done."),
             ]
         )

@@ -103,9 +103,7 @@ class ToolResult:
 
     @classmethod
     def untrusted(cls, content: str, *, source: str, **metadata: Any) -> ToolResult:
-        return cls(
-            content=content, trust=TrustLevel.UNTRUSTED, source=source, metadata=metadata
-        )
+        return cls(content=content, trust=TrustLevel.UNTRUSTED, source=source, metadata=metadata)
 
 
 @runtime_checkable
@@ -157,9 +155,7 @@ class ToolRegistry:
         requests, which is what lets provider-side prompt caching work.
         """
         return [
-            ToolSpec(
-                name=tool.name, description=tool.description, parameters=tool.parameters
-            )
+            ToolSpec(name=tool.name, description=tool.description, parameters=tool.parameters)
             for tool in (self._tools[name] for name in sorted(self._tools))
         ]
 

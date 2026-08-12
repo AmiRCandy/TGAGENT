@@ -1,0 +1,70 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not report security vulnerabilities here.** Use private
+        vulnerability reporting — see [SECURITY.md](../blob/main/.github/SECURITY.md).
+
+        **Do not paste credentials.** That means your API hash, session file,
+        LLM key, or phone number. `tgagent config show` masks secrets by
+        default; keep it that way.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      placeholder: |
+        1. Configure …
+        2. Run `tgagent run "…"`
+        3. Observe …
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: >
+        Run with `TGAGENT_LOGGING__LEVEL=DEBUG` if you can. Logs are redacted
+        automatically, but read them before pasting.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `tgagent version`
+      placeholder: "tgagent 0.1.0 / python 3.12.3 / telethon 1.44.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux, macOS, Windows, Docker, Other]
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: LLM provider and model
+      placeholder: "anthropic / claude-opus-5"
+
+  - type: dropdown
+    id: sandbox
+    attributes:
+      label: Sandbox backend
+      options: [subprocess, docker, disabled, inprocess, "not sure"]

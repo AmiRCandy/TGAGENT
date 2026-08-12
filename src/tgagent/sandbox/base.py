@@ -61,9 +61,7 @@ class ExecutionResult:
                 lines.append(self.traceback)
         if not lines:
             lines.append("(the program produced no output and set no `result`)")
-        lines.append(
-            f"[{self.rpc_calls} Telegram call(s), {self.duration_ms:.0f}ms]"
-        )
+        lines.append(f"[{self.rpc_calls} Telegram call(s), {self.duration_ms:.0f}ms]")
         return "\n".join(lines)
 
 

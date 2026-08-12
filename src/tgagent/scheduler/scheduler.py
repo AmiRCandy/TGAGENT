@@ -68,7 +68,15 @@ class Scheduler:
         self._loop_task = asyncio.create_task(self._loop(), name="scheduler")
         log.info("scheduler.started", tick_interval=self._settings.tick_interval)
 
-    async def stop(self, *, drain: bool = True, timeout: float = 30.0) -> None:
+    async def stop(
+        self,
+        *,
+        drain: bool = True,
+        # A budget for draining in-flight work, not a cancellation scope, so the
+        # usual "async functions should not take a timeout" guidance is inverted
+        # here: the caller genuinely wants to bound how long shutdown waits.
+        timeout: float = 30.0,  # noqa: ASYNC109
+    ) -> None:
         """Stop ticking and, by default, let in-flight tasks finish."""
         self._stopping.set()
         if self._loop_task is not None:
@@ -80,7 +88,7 @@ class Scheduler:
         if self._running:
             if drain:
                 log.info("scheduler.draining", active=len(self._running))
-                done, pending = await asyncio.wait(self._running, timeout=timeout)
+                _finished, pending = await asyncio.wait(self._running, timeout=timeout)
                 for task in pending:
                     task.cancel()
             else:
@@ -104,9 +112,7 @@ class Scheduler:
                 continue
             if task.kind is ScheduleKind.ONCE and task.run_count > 0:
                 continue
-            task.next_run_at = next_run_after(
-                task.kind, task.expression, task.timezone, now
-            )
+            task.next_run_at = next_run_after(task.kind, task.expression, task.timezone, now)
             if task.next_run_at is None:
                 task.enabled = False
             await self._tasks.update(task)
@@ -122,13 +128,11 @@ class Scheduler:
                 await self.tick()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - the loop must survive anything
+            except Exception as exc:
                 log.error("scheduler.tick_failed", error=str(exc), exc_info=True)
 
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(
-                    self._stopping.wait(), timeout=self._settings.tick_interval
-                )
+                await asyncio.wait_for(self._stopping.wait(), timeout=self._settings.tick_interval)
 
     async def tick(self) -> int:
         """Fire everything currently due. Returns how many were started."""
@@ -185,9 +189,7 @@ class Scheduler:
                 with contextlib.suppress(Exception):
                     await self._finish(task, status, error=error)
 
-    async def _finish(
-        self, task: ScheduledTask, status: TaskStatus, *, error: str | None
-    ) -> None:
+    async def _finish(self, task: ScheduledTask, status: TaskStatus, *, error: str | None) -> None:
         """Record the outcome and compute the next fire time."""
         now = datetime.now(UTC)
         # Re-read: the row may have been edited (disabled, rescheduled) while

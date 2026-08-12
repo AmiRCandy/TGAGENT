@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
 from tests.fakes import (
     FakeDialog,
     FakeDocument,
@@ -15,6 +14,7 @@ from tests.fakes import (
     FakeMessage,
     FakeTelegramClient,
 )
+
 from tgagent.config.settings import MediaSettings
 from tgagent.errors import EntityResolutionError, MediaTooLarge, MediaTypeRejected
 from tgagent.telegram.client import parse_proxy
@@ -223,16 +223,12 @@ class TestEntityCoercion:
         with pytest.raises(EntityResolutionError, match="list your dialogs"):
             await resolver.input_entity("@missing")
 
-    async def test_iso_string_becomes_a_datetime(
-        self, fake_client: FakeTelegramClient
-    ) -> None:
+    async def test_iso_string_becomes_a_datetime(self, fake_client: FakeTelegramClient) -> None:
         resolver = EntityResolver(fake_client)
         coerced = await coerce_argument("2026-01-31T12:00:00Z", "datetime", resolver)
         assert coerced.year == 2026 and coerced.tzinfo is not None
 
-    async def test_tagged_dict_constructs_a_tl_type(
-        self, fake_client: FakeTelegramClient
-    ) -> None:
+    async def test_tagged_dict_constructs_a_tl_type(self, fake_client: FakeTelegramClient) -> None:
         resolver = EntityResolver(fake_client)
         coerced = await coerce_argument(
             {"_": "InputMessagesFilterPhotos"}, "TypeMessagesFilter", resolver

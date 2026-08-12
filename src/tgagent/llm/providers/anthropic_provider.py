@@ -29,7 +29,6 @@ from tgagent.llm.base import (
     StreamEvent,
     TextPart,
     ToolCallPart,
-    ToolResultPart,
     ToolSpec,
     Usage,
 )
@@ -100,7 +99,7 @@ class AnthropicProvider:
         async def call() -> Any:
             try:
                 return await self._client.messages.create(**request)
-            except Exception as exc:  # noqa: BLE001 - normalised below
+            except Exception as exc:
                 raise self._translate_error(exc) from exc
 
         raw = await retry_async(
@@ -128,7 +127,7 @@ class AnthropicProvider:
                     if parsed is not None:
                         yield parsed
                 final = await stream.get_final_message()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise self._translate_error(exc) from exc
 
         completion = self._to_completion(final)
@@ -274,6 +273,8 @@ class AnthropicProvider:
         if getattr(event, "type", None) != "content_block_delta":
             return None
         delta = getattr(event, "delta", None)
+        if delta is None:
+            return None
         delta_type = getattr(delta, "type", None)
         if delta_type == "text_delta":
             return StreamEvent(kind="text", text=delta.text)

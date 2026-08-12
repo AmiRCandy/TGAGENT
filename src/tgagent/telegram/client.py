@@ -84,7 +84,9 @@ class TelegramClientManager:
         self._session_path = session_path
         self._client: Any = None
         self._watchdog: asyncio.Task[None] | None = None
-        self._closing = False
+        # An Event rather than a bool: this is read by the watchdog task and
+        # written by stop(), i.e. genuinely cross-task state.
+        self._closing = asyncio.Event()
         self._me: Any = None
 
     # ------------------------------------------------------------ lifecycle --
@@ -157,7 +159,7 @@ class TelegramClientManager:
 
     async def stop(self) -> None:
         """Disconnect and stop supervising. Safe to call more than once."""
-        self._closing = True
+        self._closing.set()
         if self._watchdog is not None:
             self._watchdog.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -205,21 +207,23 @@ class TelegramClientManager:
     # ------------------------------------------------------------ watchdog ---
     def _start_watchdog(self) -> None:
         if self._watchdog is None or self._watchdog.done():
-            self._closing = False
+            self._closing.clear()
             self._watchdog = asyncio.create_task(self._supervise(), name="telegram-watchdog")
 
     async def _supervise(self) -> None:
         """Re-establish the connection whenever Telethon gives up on it."""
         delay = _RECONNECT_BASE_DELAY
-        while not self._closing:
+        while not self._closing.is_set():
             try:
                 await self.client.disconnected
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - the point is to survive anything
-                pass
+            # The watchdog exists to survive arbitrary failures; if it
+            # propagated one, reconnection would stop for good.
+            except Exception as exc:  # noqa: BLE001
+                log.debug("telegram.disconnect_wait_failed", error=str(exc))
 
-            if self._closing:
+            if self._closing.is_set():
                 return
 
             log.warning("telegram.connection_lost", retry_in=delay)

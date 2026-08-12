@@ -1,0 +1,80 @@
+# Permission policy for tgagent.
+#
+#   cp policy.example.yaml policy.yaml
+#   export TGAGENT_PERMISSIONS__POLICY_FILE=./policy.yaml
+#
+# This file is the highest-leverage security control in the system. Everything
+# the agent does — from a curated tool or from code it wrote itself — is
+# classified into a risk tier and checked against these rules before it runs.
+#
+# Unknown keys are a hard error rather than being ignored, so a typo here fails
+# loudly instead of silently disabling a rule you thought you had.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Baseline decision per risk tier.
+#
+#   read_only           reads state; nobody else can tell
+#   reversible          trivially undoable, not notified (mark read, download)
+#   externally_visible  other people see it (send, edit, forward, join)
+#   destructive         destroys data (delete, kick, ban)
+#   account_security    2FA, sessions, privacy, authorisation
+#
+# Decisions: allow | confirm | deny
+# ─────────────────────────────────────────────────────────────────────────────
+defaults:
+  read_only: allow
+  reversible: allow
+  externally_visible: confirm
+  destructive: confirm
+  account_security: deny
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-method overrides. Names may be written either way — `messages.SendMessage`
+# or `send_message` — and both forms govern both call styles.
+# ─────────────────────────────────────────────────────────────────────────────
+method_overrides:
+  # Deleting history is not undoable and is rarely what anyone actually wanted.
+  messages.DeleteHistory: deny
+  channels.DeleteHistory: deny
+
+  # Leaving a channel loses access to its history.
+  channels.LeaveChannel: deny
+
+  # Reading and marking read are safe enough to be unattended.
+  messages.ReadHistory: allow
+
+  # Example: let an unattended job send only into one bot chat, by allowing the
+  # method and constraining the target with chat_allowlist below.
+  # messages.SendMessage: allow
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chat scoping. Applies to writes only; reads are unaffected.
+# Accepts @usernames or numeric ids. The denylist wins over the allowlist.
+# ─────────────────────────────────────────────────────────────────────────────
+chat_allowlist: []
+  # - "@my_notes_bot"
+  # - "-1001234567890"
+
+chat_denylist: []
+  # - "@company_announcements"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Global controls
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Refuse every write, whatever the rules above say. Useful while you build
+# confidence in a new deployment.
+read_only_mode: false
+
+# What happens to a `confirm` when nobody is present to answer — i.e. scheduled
+# runs. `deny` is the right default: an unattended agent should never be able to
+# do something you would have been asked about.
+non_interactive_decision: deny
+
+# Seconds to wait at a confirmation prompt before treating silence as "no".
+confirmation_timeout: 300
+
+# Hard cap on externally-visible operations in one run. This is a blast-radius
+# limit independent of per-call confirmation: even with everything approved, a
+# confused agent cannot message a hundred people.
+max_outbound_per_run: 20

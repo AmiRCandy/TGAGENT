@@ -11,10 +11,8 @@ from tgagent.errors import ContextOverflowError
 from tgagent.llm.base import (
     Message,
     Role,
-    TextPart,
     ToolCallPart,
     ToolResultPart,
-    ToolSpec,
 )
 from tgagent.llm.providers.fake import FakeProvider, text_completion
 from tgagent.observability.redaction import (
@@ -41,9 +39,7 @@ class TestCompaction:
     def test_short_conversations_are_left_alone(self) -> None:
         provider = FakeProvider(context_window=200_000)
         manager = self._manager(provider)
-        assert not manager.needs_compaction(
-            [Message.user("hello")], system="sys", tools=[]
-        )
+        assert not manager.needs_compaction([Message.user("hello")], system="sys", tools=[])
 
     def test_long_conversations_trigger_compaction(self) -> None:
         provider = FakeProvider(context_window=8_000)
@@ -90,27 +86,20 @@ class TestCompaction:
                 )
             )
             history.append(
-                Message.tool_results(
-                    [ToolResultPart(tool_call_id=f"c{i}", content="x" * 400)]
-                )
+                Message.tool_results([ToolResultPart(tool_call_id=f"c{i}", content="x" * 400)])
             )
 
         compacted, _ = await manager.compact(history, system="s", tools=[])
 
-        requested = {
-            p.id for m in compacted for p in m.content if isinstance(p, ToolCallPart)
-        }
+        requested = {p.id for m in compacted for p in m.content if isinstance(p, ToolCallPart)}
         answered = {
-            p.tool_call_id
-            for m in compacted
-            for p in m.content
-            if isinstance(p, ToolResultPart)
+            p.tool_call_id for m in compacted for p in m.content if isinstance(p, ToolResultPart)
         }
         assert answered <= requested, "a tool result lost its request"
 
     async def test_summarisation_failure_falls_back_to_a_mechanical_digest(self) -> None:
-        from tgagent.llm.providers.fake import FailingProvider
         from tgagent.errors import LLMError
+        from tgagent.llm.providers.fake import FailingProvider
 
         class Hybrid(FailingProvider):
             context_window = 20_000
@@ -144,7 +133,7 @@ class TestCompaction:
         # Recent turns alone are far larger than the whole window.
         history = _long_history(turns=6, size=20_000)
 
-        with pytest.raises(ContextOverflowError, match="(?i)even after compaction"):
+        with pytest.raises(ContextOverflowError, match=r"(?i)even after compaction"):
             await manager.compact(history, system="s", tools=[])
 
 
@@ -174,9 +163,7 @@ class TestSystemPrompt:
         prompt = build_system_prompt(settings, now=datetime.now(UTC))
         assert "READ-ONLY MODE" in prompt
 
-    def test_the_prompt_is_built_only_from_code_and_host_state(
-        self, settings: Settings
-    ) -> None:
+    def test_the_prompt_is_built_only_from_code_and_host_state(self, settings: Settings) -> None:
         # Nothing from Telegram may influence the system prompt; the only
         # variable inputs are host-controlled.
         from datetime import UTC, datetime

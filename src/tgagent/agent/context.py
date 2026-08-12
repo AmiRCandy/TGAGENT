@@ -177,11 +177,9 @@ class ContextManager:
             return False
         # And the message just before the cut must not be an unanswered request.
         preceding = messages[index - 1] if index > 0 else None
-        if preceding is not None and any(
-            isinstance(p, ToolCallPart) for p in preceding.content
-        ):
-            return False
-        return True
+        return not (
+            preceding is not None and any(isinstance(p, ToolCallPart) for p in preceding.content)
+        )
 
     async def _summarise(self, older: Sequence[Message]) -> str:
         transcript = _render_transcript(older)

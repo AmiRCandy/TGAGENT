@@ -101,9 +101,7 @@ class MemoryReadTool:
         elif query := arguments.get("query"):
             payload = [_fact_dict(f) for f in await context.memory.search(str(query), limit=limit)]
         else:
-            facts = await context.memory.list_all(
-                category=arguments.get("category"), limit=limit
-            )
+            facts = await context.memory.list_all(category=arguments.get("category"), limit=limit)
             payload = [_fact_dict(f) for f in facts]
 
         return ToolResult(
@@ -122,9 +120,7 @@ class MemoryDeleteTool:
         "stops influencing future runs."
     )
     risk_hint = RiskTier.REVERSIBLE
-    parameters = object_schema(
-        {"key": string_field("The key to delete.")}, required=["key"]
-    )
+    parameters = object_schema({"key": string_field("The key to delete.")}, required=["key"])
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         if context.memory is None or not context.settings.features.memory:

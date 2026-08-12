@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
@@ -22,7 +22,7 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
-class MessageRole(str, Enum):
+class MessageRole(StrEnum):
     """Who produced a turn in an agent conversation."""
 
     USER = "user"
@@ -74,13 +74,13 @@ class MemoryFact:
     updated_at: datetime = field(default_factory=_now)
 
 
-class ScheduleKind(str, Enum):
+class ScheduleKind(StrEnum):
     CRON = "cron"
     INTERVAL = "interval"
     ONCE = "once"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"

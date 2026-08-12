@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a capability or an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: >
+        Describe the situation, not the solution. The most useful requests
+        explain a real task the agent cannot do today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the system?
+      options:
+        - Telegram capabilities
+        - Agent runtime / reasoning
+        - Tools
+        - Security / permissions
+        - Sandboxing
+        - Scheduling
+        - Memory
+        - LLM providers
+        - Interfaces (CLI / other)
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security implications
+      description: >
+        This agent operates a real Telegram account. If your idea involves
+        sending, deleting, or reaching outside Telegram, what risk tier should
+        it be, and should it require confirmation?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What did you try instead?
+      description: >
+        The `python` tool and `telegram_invoke` already reach the whole API —
+        if those cover it, a curated tool may not be needed.

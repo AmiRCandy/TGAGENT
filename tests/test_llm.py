@@ -54,7 +54,11 @@ class TestMessageTypes:
     def test_text_ignores_tool_traffic(self) -> None:
         message = Message(
             role=Role.ASSISTANT,
-            content=[TextPart("hello "), ToolCallPart(id="1", name="t", arguments={}), TextPart("world")],
+            content=[
+                TextPart("hello "),
+                ToolCallPart(id="1", name="t", arguments={}),
+                TextPart("world"),
+            ],
         )
         assert message.text == "hello world"
 
@@ -224,8 +228,6 @@ class TestFakeProvider:
         assert final is not None and final.text.startswith("hello world")
 
     async def test_multi_tool_completion(self) -> None:
-        provider = FakeProvider(
-            [multi_tool_completion([("a", {}), ("b", {})])]
-        )
+        provider = FakeProvider([multi_tool_completion([("a", {}), ("b", {})])])
         completion = await provider.complete(system="", messages=[])
         assert [c.name for c in completion.tool_calls] == ["a", "b"]

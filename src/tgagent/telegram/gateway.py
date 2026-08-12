@@ -39,6 +39,7 @@ from tgagent.errors import (
     TelegramError,
 )
 from tgagent.observability.logging import get_logger
+from tgagent.risk import PolicyDecision, RiskTier
 from tgagent.security.confirm import (
     ConfirmationProvider,
     ConfirmationRequest,
@@ -49,7 +50,6 @@ from tgagent.security.permissions import (
     OperationRequest,
     PermissionEngine,
 )
-from tgagent.risk import PolicyDecision, RiskTier
 from tgagent.storage.base import AuditRepository
 from tgagent.storage.models import AuditEntry
 from tgagent.telegram.client import TelegramClientManager
@@ -59,16 +59,16 @@ from tgagent.telegram.entities import (
     coerce_argument,
     extract_target,
 )
-
-#: Annotation stand-in used when a **kwargs parameter has no declared type but
-#: its name says it is a peer, so string references still get resolved.
-_PEER_HINT = "TypeInputPeer"
 from tgagent.telegram.serialize import (
     extract_text_fields,
     to_jsonable,
 )
 
 log = get_logger(__name__)
+
+#: Annotation stand-in used when a **kwargs parameter has no declared type
+#: but its name says it is a peer, so string references still get resolved.
+_PEER_HINT = "TypeInputPeer"
 
 
 @dataclass(slots=True)
@@ -168,7 +168,11 @@ class TelegramGateway:
 
         if verdict.decision is PolicyDecision.DENY:
             await self._record(
-                request, verdict, ctx, succeeded=False, error=verdict.reason,
+                request,
+                verdict,
+                ctx,
+                succeeded=False,
+                error=verdict.reason,
                 duration_ms=(time.perf_counter() - started) * 1000,
             )
             log.warning(
@@ -189,10 +193,14 @@ class TelegramGateway:
             raise
         except PermissionDenied:
             raise
-        except Exception as exc:  # noqa: BLE001 - normalised into TelegramCallError
+        except Exception as exc:
             error = self._translate(exc, method)
             await self._record(
-                request, verdict, ctx, succeeded=False, error=str(error),
+                request,
+                verdict,
+                ctx,
+                succeeded=False,
+                error=str(error),
                 duration_ms=(time.perf_counter() - started) * 1000,
             )
             raise error from exc
@@ -209,7 +217,12 @@ class TelegramGateway:
         scan_result = self._scan(payload)
 
         await self._record(
-            request, verdict, ctx, succeeded=True, error=None, duration_ms=duration_ms,
+            request,
+            verdict,
+            ctx,
+            succeeded=True,
+            error=None,
+            duration_ms=duration_ms,
             suspicion=scan_result.score,
         )
         log.info(
@@ -261,7 +274,11 @@ class TelegramGateway:
             verdict = await self._ask(request, verdict)
         if verdict.decision is PolicyDecision.DENY:
             await self._record(
-                request, verdict, ctx, succeeded=False, error=verdict.reason,
+                request,
+                verdict,
+                ctx,
+                succeeded=False,
+                error=verdict.reason,
                 duration_ms=(time.perf_counter() - started) * 1000,
             )
             raise PermissionDenied(
@@ -281,10 +298,14 @@ class TelegramGateway:
             written = await client.download_media(message, file=destination)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             error = self._translate(exc, "download_media")
             await self._record(
-                request, verdict, ctx, succeeded=False, error=str(error),
+                request,
+                verdict,
+                ctx,
+                succeeded=False,
+                error=str(error),
                 duration_ms=(time.perf_counter() - started) * 1000,
             )
             raise error from exc
@@ -317,9 +338,7 @@ class TelegramGateway:
             return await self._execute_raw(client, method, arguments)
         return await self._execute_friendly(client, method, arguments)
 
-    async def _execute_friendly(
-        self, client: Any, method: str, arguments: dict[str, Any]
-    ) -> Any:
+    async def _execute_friendly(self, client: Any, method: str, arguments: dict[str, Any]) -> Any:
         member = getattr(client, method, None)
         if member is None or not callable(member):
             raise TelegramError(
@@ -353,9 +372,7 @@ class TelegramGateway:
 
         # Several Telethon methods take **kwargs and forward them; rejecting
         # names the signature does not list would make those uncallable.
-        accepts_extra = any(
-            p.kind is p.VAR_KEYWORD for p in signature.parameters.values()
-        )
+        accepts_extra = any(p.kind is p.VAR_KEYWORD for p in signature.parameters.values())
 
         prepared: dict[str, Any] = {}
         for name, value in arguments.items():
@@ -403,9 +420,7 @@ class TelegramGateway:
             and parameter.kind not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
         ]
         if missing:
-            raise TelegramError(
-                f"{method} is missing required parameter(s): {', '.join(missing)}."
-            )
+            raise TelegramError(f"{method} is missing required parameter(s): {', '.join(missing)}.")
 
         return await client(request_cls(**kwargs))
 
@@ -434,11 +449,13 @@ class TelegramGateway:
         )
         if outcome.approved:
             return AuthorizationResult(
-                PolicyDecision.ALLOW, verdict.risk,
+                PolicyDecision.ALLOW,
+                verdict.risk,
                 outcome.reason or "Approved by the user.",
             )
         return AuthorizationResult(
-            PolicyDecision.DENY, verdict.risk,
+            PolicyDecision.DENY,
+            verdict.risk,
             outcome.reason or "The user declined the confirmation prompt.",
         )
 
@@ -598,7 +615,7 @@ def _tl_object_arguments(obj: Any) -> dict[str, Any]:
             continue
         try:
             value = getattr(obj, name)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112 - best-effort audit view of a TL object
             continue
         if not callable(value):
             out[name] = value

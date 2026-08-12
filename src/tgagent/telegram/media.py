@@ -78,7 +78,10 @@ def sanitise_filename(name: str | None, *, fallback: str = "file") -> str:
     stem, dot, suffix = candidate.rpartition(".")
     # Windows treats these as devices regardless of extension.
     reserved = {
-        "con", "prn", "aux", "nul",
+        "con",
+        "prn",
+        "aux",
+        "nul",
         *(f"com{i}" for i in range(1, 10)),
         *(f"lpt{i}" for i in range(1, 10)),
     }
@@ -132,12 +135,15 @@ class MediaManager:
             )
 
         allowed = self._settings.allowed_mime_prefixes
-        if allowed and mime_type:
-            if not any(mime_type.lower().startswith(p.lower()) for p in allowed):
-                raise MediaTypeRejected(
-                    f"Refusing to download {file_name}: MIME type {mime_type!r} is not on "
-                    f"the allow-list."
-                )
+        if (
+            allowed
+            and mime_type
+            and not any(mime_type.lower().startswith(p.lower()) for p in allowed)
+        ):
+            raise MediaTypeRejected(
+                f"Refusing to download {file_name}: MIME type {mime_type!r} is not on "
+                f"the allow-list."
+            )
 
     # ------------------------------------------------------------ download --
     async def download_message_media(
@@ -179,12 +185,14 @@ class MediaManager:
 
         path = Path(written)
         self._assert_inside_root(path)
-        size = path.stat().st_size if path.exists() else 0
+        # Local metadata reads on a file this process just wrote. Offloading
+        # them to a thread would cost more than the microseconds it saves.
+        size = path.stat().st_size if path.exists() else 0  # noqa: ASYNC240
 
         if size > self._settings.max_file_bytes:
             # Metadata under-reported; delete rather than keep an oversized file.
             with contextlib.suppress(OSError):
-                path.unlink()
+                path.unlink()  # noqa: ASYNC240
             raise MediaTooLarge(
                 f"{file_name} turned out to be {size:,} bytes, over the configured limit; "
                 f"it has been deleted."
@@ -222,7 +230,7 @@ class MediaManager:
                 if path.stat().st_mtime < cutoff_ts:
                     path.unlink()
                     removed += 1
-            except OSError as exc:  # noqa: PERF203 - per-file failure is expected
+            except OSError as exc:
                 log.warning("media.cleanup_failed", path=str(path), error=str(exc))
 
         for directory in sorted(self._root.rglob("*"), reverse=True):
@@ -261,7 +269,7 @@ class MediaManager:
 
 def _project_media_metadata(messages: Any) -> list[dict[str, Any]]:
     """Extract just what the size/type checks need."""
-    from tgagent.telegram.serialize import _media_summary  # noqa: PLC0415
+    from tgagent.telegram.serialize import _media_summary
 
     out: list[dict[str, Any]] = []
     for message in messages or []:

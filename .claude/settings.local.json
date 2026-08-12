@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -m pip index versions telethon 2>&1)",
+      "PowerShell(python -m pip index versions pyrogram 2>&1)",
+      "PowerShell(\"--- pyrogram ---\")",
+      "WebSearch",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "PowerShell(python -m pip index versions croniter 2>&1)",
+      "PowerShell(python -m pip index versions anthropic 2>&1)",
+      "PowerShell(python -m pip index versions openai 2>&1)",
+      "PowerShell(python -m pip index versions structlog 2>&1)",
+      "PowerShell(python -m pip index versions pydantic-settings 2>&1)",
+      "PowerShell(python -m pip index versions typer 2>&1)",
+      "PowerShell(python -m pip index versions cryptg 2>&1)",
+      "PowerShell(h:\\\\TAGENT\\\\.venv\\\\Scripts\\\\python.exe -m pip install --timeout 60 --retries 5 -e \"h:\\\\TAGENT[dev]\" 2>&1)",
+      "PowerShell(h:\\\\TAGENT\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\AmiR\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\h--TAGENT\\\\15573898-33dd-4f4d-932f-d281c126a971\\\\scratchpad\\\\probe.py\")",
+      "Bash(python -)",
+      "Bash(./.venv/Scripts/python.exe \"C:/Users/AmiR/AppData/Local/Temp/claude/h--TAGENT/15573898-33dd-4f4d-932f-d281c126a971/scratchpad/probe3.py\")",
+      "Bash(./.venv/Scripts/python.exe -c ' *)",
+      "Bash(./.venv/Scripts/python.exe -m pip install -q tzdata)",
+      "Bash(./.venv/Scripts/python.exe -m ruff check . --output-format=concise)",
+      "Bash(./.venv/Scripts/python.exe -m ruff check . --fix --output-format=concise)",
+      "Bash(./.venv/Scripts/python.exe -m ruff check . --fix -q)",
+      "Bash(./.venv/Scripts/python.exe -m ruff format --check .)",
+      "Bash(./.venv/Scripts/python.exe -m mypy)",
+      "Bash(./.venv/Scripts/python.exe -m ruff check . -q --output-format=concise)"
+    ]
+  }
+}

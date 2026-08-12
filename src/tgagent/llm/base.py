@@ -14,11 +14,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
@@ -155,7 +155,7 @@ class ToolSpec:
 
 
 # --------------------------------------------------------------- completion --
-class StopReason(str, Enum):
+class StopReason(StrEnum):
     END_TURN = "end_turn"
     TOOL_USE = "tool_use"
     MAX_TOKENS = "max_tokens"

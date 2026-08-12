@@ -44,8 +44,18 @@ WORKER_PATH = Path(__file__).with_name("worker.py")
 #: dropped, so a credential in the parent's environment cannot leak into code
 #: the model wrote.
 _ENV_ALLOWLIST = (
-    "PATH", "SYSTEMROOT", "SystemRoot", "COMSPEC", "TEMP", "TMP", "TMPDIR",
-    "LANG", "LC_ALL", "LC_CTYPE", "TZ", "WINDIR",
+    "PATH",
+    "SYSTEMROOT",
+    "SystemRoot",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "WINDIR",
 )
 
 
@@ -244,9 +254,7 @@ class SubprocessSandbox:
             raise
         except Exception as exc:  # noqa: BLE001 - reported to the program, not raised
             elapsed = (time.perf_counter() - started) * 1000
-            rpc_log.append(
-                RpcRecord(method=method, ok=False, duration_ms=elapsed, error=str(exc))
-            )
+            rpc_log.append(RpcRecord(method=method, ok=False, duration_ms=elapsed, error=str(exc)))
             return {
                 "type": FrameType.RPC_RESULT,
                 "id": call_id,

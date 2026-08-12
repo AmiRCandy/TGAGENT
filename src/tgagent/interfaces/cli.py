@@ -13,7 +13,6 @@ import contextlib
 import json
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -36,7 +35,7 @@ from tgagent.security.confirm import (
     ConfirmationRequest,
 )
 from tgagent.security.permissions import classify
-from tgagent.storage.models import ScheduleKind, ScheduledTask
+from tgagent.storage.models import ScheduledTask, ScheduleKind
 from tgagent.telegram.auth import LoginFlow
 from tgagent.telegram.client import TelegramClientManager
 
@@ -97,15 +96,15 @@ async def _ask_on_terminal(request: ConfirmationRequest) -> ConfirmationOutcome:
                 f"Allow further {request.method} calls for the rest of this run?",
                 default=False,
             )
-        return ConfirmationOutcome(approved=True, reason="Approved at the prompt.", remember=remember)
+        return ConfirmationOutcome(
+            approved=True, reason="Approved at the prompt.", remember=remember
+        )
 
     return await asyncio.to_thread(prompt)
 
 
 def _terminal_confirmations(settings: Settings) -> CallbackConfirmation:
-    return CallbackConfirmation(
-        _ask_on_terminal, timeout=settings.permissions.confirmation_timeout
-    )
+    return CallbackConfirmation(_ask_on_terminal, timeout=settings.permissions.confirmation_timeout)
 
 
 class _Renderer:
@@ -166,9 +165,7 @@ def login(
         flow = LoginFlow(
             manager,
             phone=phone or settings.telegram.phone,
-            request_phone=lambda: asyncio.to_thread(
-                Prompt.ask, "Phone number (e.g. +15551234567)"
-            ),
+            request_phone=lambda: asyncio.to_thread(Prompt.ask, "Phone number (e.g. +15551234567)"),
             request_code=lambda: asyncio.to_thread(Prompt.ask, "Login code from Telegram"),
             request_password=lambda: asyncio.to_thread(
                 Prompt.ask, "Two-factor password", password=True
@@ -261,13 +258,9 @@ def run(
         if read_only:
             settings.permissions.read_only_mode = True
 
-        confirmations = (
-            AutoApproveConfirmation() if yes else _terminal_confirmations(settings)
-        )
+        confirmations = AutoApproveConfirmation() if yes else _terminal_confirmations(settings)
         if yes:
-            console.print(
-                "[yellow]--yes: confirmations are auto-approved for this run.[/yellow]"
-            )
+            console.print("[yellow]--yes: confirmations are auto-approved for this run.[/yellow]")
 
         application = Application(settings, confirmations=confirmations)
         try:
@@ -406,9 +399,7 @@ def tasks_list() -> None:
 def tasks_add(
     name: Annotated[str, typer.Argument(help="Unique task name.")],
     prompt: Annotated[str, typer.Argument(help="Instruction to run each time.")],
-    cron: Annotated[
-        str | None, typer.Option(help="Cron expression, e.g. '0 8 * * *'.")
-    ] = None,
+    cron: Annotated[str | None, typer.Option(help="Cron expression, e.g. '0 8 * * *'.")] = None,
     every: Annotated[int | None, typer.Option(help="Interval in seconds.")] = None,
     once: Annotated[str | None, typer.Option(help="ISO-8601 timestamp for a one-off.")] = None,
     timezone: Annotated[str, typer.Option(help="IANA timezone for cron.")] = "UTC",
@@ -544,7 +535,9 @@ def config_check() -> None:
         table.add_row(
             "Telegram credentials",
             ok if configured else bad,
-            "api_id/api_hash present" if configured else "set TGAGENT_TELEGRAM__API_ID and __API_HASH",
+            "api_id/api_hash present"
+            if configured
+            else "set TGAGENT_TELEGRAM__API_ID and __API_HASH",
         )
         session_exists = settings.session_path.exists()
         table.add_row(
@@ -593,9 +586,7 @@ def config_policy(
 
     if method:
         risk = classify(method)
-        decision = permissions.method_overrides.get(
-            method, permissions.defaults.get(risk)
-        )
+        decision = permissions.method_overrides.get(method, permissions.defaults.get(risk))
         style = _RISK_STYLE.get(risk, "white")
         console.print(
             Panel(

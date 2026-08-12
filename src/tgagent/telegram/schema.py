@@ -229,13 +229,15 @@ def _build_tl_requests() -> list[ApiEntry]:
                 continue
             bare = name[: -len("Request")]
             path = f"{namespace}.{bare}" if namespace else bare
+            # `obj` is a class here, so its __init__ carries the TL signature.
+            initialiser: Any = getattr(obj, "__init__")  # noqa: B009
             entries.append(
                 ApiEntry(
                     path=path,
                     kind="tl_request",
-                    parameters=_parameters_of(obj.__init__),
-                    returns=_returns_of(obj.__init__),
-                    summary=_summary_of(obj.__init__),
+                    parameters=_parameters_of(initialiser),
+                    returns=_returns_of(initialiser),
+                    summary=_summary_of(initialiser),
                     module=module.__name__,
                 )
             )
@@ -258,11 +260,26 @@ def _build_client_methods() -> list[ApiEntry]:
     #: Methods that manage the connection or credentials rather than doing work.
     #: They are excluded so the agent is never nudged toward calling them.
     excluded = {
-        "connect", "disconnect", "start", "run_until_disconnected", "log_out",
-        "sign_in", "sign_up", "send_code_request", "qr_login", "edit_2fa",
-        "add_event_handler", "remove_event_handler", "list_event_handlers",
-        "session", "loop", "disconnected", "flood_sleep_threshold", "parse_mode",
-        "set_proxy", "catch_up",
+        "connect",
+        "disconnect",
+        "start",
+        "run_until_disconnected",
+        "log_out",
+        "sign_in",
+        "sign_up",
+        "send_code_request",
+        "qr_login",
+        "edit_2fa",
+        "add_event_handler",
+        "remove_event_handler",
+        "list_event_handlers",
+        "session",
+        "loop",
+        "disconnected",
+        "flood_sleep_threshold",
+        "parse_mode",
+        "set_proxy",
+        "catch_up",
     }
 
     entries: list[ApiEntry] = []
@@ -299,9 +316,7 @@ def _parameters_of(func: Any, *, skip_self: bool = True) -> list[dict[str, Any]]
             continue
         annotation = parameter.annotation
         rendered = (
-            _clean_annotation(annotation)
-            if annotation is not inspect.Parameter.empty
-            else "Any"
+            _clean_annotation(annotation) if annotation is not inspect.Parameter.empty else "Any"
         )
         out.append(
             {

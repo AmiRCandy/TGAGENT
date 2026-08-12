@@ -220,7 +220,7 @@ def _page_from(messages: list[Any], page_size: int, *, reverse: bool) -> History
     next_offset: int | None = None
     if has_more and rows:
         # Paging backwards keys off the oldest id seen; forwards off the newest.
-        ids = [m.get("id") for m in rows if isinstance(m.get("id"), int)]
+        ids = [value for m in rows if isinstance(value := m.get("id"), int)]
         if ids:
             next_offset = max(ids) if reverse else min(ids)
     return HistoryPage(messages=rows, next_offset_id=next_offset, has_more=has_more)

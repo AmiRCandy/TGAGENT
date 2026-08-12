@@ -88,7 +88,7 @@ class SQLiteStorage:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._db = await aiosqlite.connect(self._path, isolation_level=None)
-        except Exception as exc:  # noqa: BLE001 - surfaced as a typed error
+        except Exception as exc:
             raise StorageError(f"Cannot open database at {self._path}: {exc}") from exc
 
         self._db.row_factory = aiosqlite.Row
@@ -157,7 +157,7 @@ class SQLiteStorage:
                         await self.db.execute(statement)
                     await self.db.execute(f"PRAGMA user_version={version}")
                     await self.db.execute("COMMIT")
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     await self.db.execute("ROLLBACK")
                     raise MigrationError(
                         f"Migration {version} ({description}) failed: {exc}"
@@ -184,7 +184,9 @@ class _ConversationRepo:
         return conversation
 
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
-        row = await self._s.query_one("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
+        row = await self._s.query_one(
+            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+        )
         return self._row_to_conversation(row) if row else None
 
     async def list_conversations(self, *, limit: int = 20, offset: int = 0) -> list[Conversation]:
@@ -207,9 +209,12 @@ class _ConversationRepo:
             )
 
     async def delete_conversation(self, conversation_id: str) -> bool:
-        return await self._s.execute_returning_rowcount(
-            "DELETE FROM conversations WHERE id = ?", (conversation_id,)
-        ) > 0
+        return (
+            await self._s.execute_returning_rowcount(
+                "DELETE FROM conversations WHERE id = ?", (conversation_id,)
+            )
+            > 0
+        )
 
     async def add_message(self, message: StoredMessage) -> StoredMessage:
         await self._s.execute(
@@ -321,9 +326,12 @@ class _MemoryRepo:
         return [self._row_to_fact(r) for r in rows]
 
     async def delete(self, key: str) -> bool:
-        return await self._s.execute_returning_rowcount(
-            "DELETE FROM memory_facts WHERE key = ?", (key,)
-        ) > 0
+        return (
+            await self._s.execute_returning_rowcount(
+                "DELETE FROM memory_facts WHERE key = ?", (key,)
+            )
+            > 0
+        )
 
     @staticmethod
     def _row_to_fact(row: aiosqlite.Row) -> MemoryFact:
@@ -350,7 +358,8 @@ class _TaskRepo:
 
     async def create(self, task: ScheduledTask) -> ScheduledTask:
         await self._s.execute(
-            f"INSERT INTO scheduled_tasks ({self._COLUMNS}) "
+            # _COLUMNS is a class constant, never user input.
+            f"INSERT INTO scheduled_tasks ({self._COLUMNS}) "  # noqa: S608
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             self._to_params(task),
         )
@@ -403,9 +412,12 @@ class _TaskRepo:
         return task
 
     async def delete(self, task_id: str) -> bool:
-        return await self._s.execute_returning_rowcount(
-            "DELETE FROM scheduled_tasks WHERE id = ?", (task_id,)
-        ) > 0
+        return (
+            await self._s.execute_returning_rowcount(
+                "DELETE FROM scheduled_tasks WHERE id = ?", (task_id,)
+            )
+            > 0
+        )
 
     async def claim(self, task_id: str, now: datetime) -> bool:
         """Compare-and-swap on ``next_run_at``.
@@ -488,9 +500,7 @@ class _AuditRepo:
             ),
         )
 
-    async def list_recent(
-        self, *, run_id: str | None = None, limit: int = 100
-    ) -> list[AuditEntry]:
+    async def list_recent(self, *, run_id: str | None = None, limit: int = 100) -> list[AuditEntry]:
         if run_id:
             rows = await self._s.query(
                 "SELECT * FROM audit_log WHERE run_id = ? ORDER BY timestamp DESC LIMIT ?",

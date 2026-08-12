@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from tgagent.risk import RiskTier
+from tgagent.telegram.schema import format_entry
 from tgagent.tools.base import (
     ToolContext,
     ToolResult,
@@ -21,7 +22,6 @@ from tgagent.tools.base import (
     require,
     string_field,
 )
-from tgagent.telegram.schema import format_entry
 
 
 class ApiSearchTool:
@@ -37,9 +37,7 @@ class ApiSearchTool:
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
         {
-            "query": string_field(
-                "What you want to do, or an exact method name to look up."
-            ),
+            "query": string_field("What you want to do, or an exact method name to look up."),
             "limit": integer_field("How many results to return (1-25).", default=8),
             "kind": string_field(
                 "Restrict results: 'client_method' for the friendly high-level layer "
@@ -71,7 +69,6 @@ class ApiSearchTool:
 
         blocks = [format_entry(hit.entry) for hit in hits]
         header = (
-            f"{len(hits)} match(es) for {query!r} "
-            f"(index covers {len(context.schema)} methods):"
+            f"{len(hits)} match(es) for {query!r} (index covers {len(context.schema)} methods):"
         )
         return ToolResult(content=f"{header}\n\n" + "\n\n".join(blocks))

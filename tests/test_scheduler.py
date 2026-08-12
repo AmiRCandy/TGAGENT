@@ -66,12 +66,14 @@ class TestTriggers:
         assert "cron" in describe_schedule(
             ScheduledTask(kind=ScheduleKind.CRON, expression="0 8 * * *")
         )
-        assert describe_schedule(
-            ScheduledTask(kind=ScheduleKind.INTERVAL, expression="3600")
-        ) == "every 1h"
-        assert describe_schedule(
-            ScheduledTask(kind=ScheduleKind.INTERVAL, expression="300")
-        ) == "every 5m"
+        assert (
+            describe_schedule(ScheduledTask(kind=ScheduleKind.INTERVAL, expression="3600"))
+            == "every 1h"
+        )
+        assert (
+            describe_schedule(ScheduledTask(kind=ScheduleKind.INTERVAL, expression="300"))
+            == "every 5m"
+        )
 
 
 class TestSchedulerLoop:
@@ -142,9 +144,7 @@ class TestSchedulerLoop:
         assert reloaded.next_run_at is not None
         assert reloaded.next_run_at > now
 
-    async def test_a_failing_task_is_recorded_and_rescheduled(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_a_failing_task_is_recorded_and_rescheduled(self, storage: SQLiteStorage) -> None:
         async def runner(_task: ScheduledTask) -> str:
             raise RuntimeError("the task blew up")
 
@@ -206,9 +206,7 @@ class TestSchedulerLoop:
         )
         await storage.tasks.create(task)
 
-        scheduler = Scheduler(
-            storage.tasks, runner, SchedulerSettings(misfire_grace=60.0)
-        )
+        scheduler = Scheduler(storage.tasks, runner, SchedulerSettings(misfire_grace=60.0))
         await scheduler.tick()
         await asyncio.sleep(0.05)
         await scheduler.stop()
@@ -273,9 +271,7 @@ class TestSchedulerLoop:
         async def runner(_task: ScheduledTask) -> str:
             return ""
 
-        scheduler = Scheduler(
-            storage.tasks, runner, SchedulerSettings(tick_interval=0.05)
-        )
+        scheduler = Scheduler(storage.tasks, runner, SchedulerSettings(tick_interval=0.05))
         await scheduler.start()
         await asyncio.sleep(0.15)
         await scheduler.stop()

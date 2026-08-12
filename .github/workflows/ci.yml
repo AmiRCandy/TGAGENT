@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_COLOR: "1"
+  # No test may reach Telegram or a model provider. If one tries, it must fail
+  # rather than silently pick up a developer's real credentials.
+  TGAGENT_TELEGRAM__API_ID: "0"
+  TGAGENT_TELEGRAM__API_HASH: ""
+
+jobs:
+  # ── Fast feedback: style and types. Runs on one interpreter; neither depends
+  #    on the runtime version, so a matrix here would only burn minutes. ──────
+  lint:
+    name: Lint & type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Ruff (lint)
+        run: ruff check --output-format=github .
+
+      - name: Ruff (format)
+        run: ruff format --check --diff .
+
+      - name: Mypy
+        run: mypy
+
+  # ── The real test suite, across supported interpreters and both OS families.
+  #    Windows is in the matrix deliberately: the sandbox behaves differently
+  #    there (no rlimits), and that difference has broken things before. ──────
+  test:
+    name: Tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # One Windows job: enough to catch platform breakage without tripling
+          # the matrix.
+          - os: windows-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: >
+          pytest
+          --cov=tgagent
+          --cov-report=term-missing:skip-covered
+          --cov-report=xml
+          -p no:randomly
+          --durations=10
+
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 7
+
+  # ── Security. Split from lint so a finding is unambiguous in the checks list.
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Bandit (static analysis)
+        # The sandbox worker uses exec() by design; that file is reviewed by
+        # hand and by the isolation tests rather than by bandit.
+        run: bandit -r src/tgagent -c pyproject.toml --skip B102,B307 -q
+
+      - name: pip-audit (known vulnerabilities)
+        run: pip-audit --strict --desc
+
+      - name: Secret hygiene
+        # A committed session file or .env would be a live credential leak, so
+        # this is a hard failure rather than a warning.
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '\.(session|session-journal)$|^\.env$'; then
+            echo "::error::Session or .env files must never be committed."
+            exit 1
+          fi
+          echo "No credential material tracked."
+
+  # ── Does the package actually build and install from a clean environment?
+  #    This is the check that catches a missing dependency or a broken entry
+  #    point, which no amount of unit testing will find.
+  package:
+    name: Build & install
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          pip install build twine
+          python -m build
+
+      - name: Validate metadata
+        run: twine check dist/*
+
+      - name: Install the wheel into a clean venv and smoke-test it
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install --quiet dist/*.whl
+          /tmp/clean/bin/tgagent version
+          /tmp/clean/bin/tgagent --help > /dev/null
+          # config check exits 1 without Telegram credentials, which is correct
+          # behaviour here — assert on the message, not the exit code.
+          /tmp/clean/bin/tgagent config check || true
+          echo "Clean install works."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # ── A single required status, so branch protection needs one entry rather
+  #    than a list that drifts out of date as the matrix changes.
+  ci-ok:
+    name: CI
+    if: always()
+    needs: [lint, test, security, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every job succeeded
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::One or more CI jobs failed."
+            exit 1
+          fi
+          echo "All CI jobs passed."

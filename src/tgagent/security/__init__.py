@@ -1,5 +1,6 @@
 """Security: risk classification, permissions, confirmations, trust boundaries."""
 
+from tgagent.risk import PolicyDecision, RiskTier, TrustLevel
 from tgagent.security.confirm import (
     AutoApproveConfirmation,
     AutoDenyConfirmation,
@@ -16,7 +17,6 @@ from tgagent.security.permissions import (
     classify,
     normalise_method,
 )
-from tgagent.risk import PolicyDecision, RiskTier, TrustLevel
 from tgagent.security.trust import (
     UntrustedContent,
     sentinel_tag,

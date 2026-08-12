@@ -39,10 +39,10 @@ from tgagent.errors import (
 )
 from tgagent.llm.base import (
     Completion,
+    ContentPart,
     GenerationParams,
     LLMProvider,
     Message,
-    Role,
     StopReason,
     TextPart,
     ToolCallPart,
@@ -129,9 +129,7 @@ class AgentRuntime:
                     started=started,
                 )
         except TimeoutError:
-            await emit(
-                AgentEvent.make(EventKind.ERROR, "The run exceeded its overall time limit.")
-            )
+            await emit(AgentEvent.make(EventKind.ERROR, "The run exceeded its overall time limit."))
             return RunResult(
                 run_id=run_id,
                 conversation_id=conversation_id or "",
@@ -280,7 +278,10 @@ class AgentRuntime:
                 break
 
             tool_message = Message.tool_results(
-                [self._to_result_part(call, result) for call, result in zip(calls, results, strict=True)]
+                [
+                    self._to_result_part(call, result)
+                    for call, result in zip(calls, results, strict=True)
+                ]
             )
             history.append(tool_message)
             await self._persist(conversation.id, MessageRole.TOOL, tool_message)
@@ -309,7 +310,7 @@ class AgentRuntime:
             cancelled=cancel.is_set(),
             errors=errors,
         )
-        await emit(AgentEvent.make(EventKind.RUN_FINISHED, result.answer, **{"result": result}))
+        await emit(AgentEvent.make(EventKind.RUN_FINISHED, result.answer, data={"result": result}))
         log.info(
             "agent.run_finished",
             steps=result.steps,
@@ -426,7 +427,7 @@ class AgentRuntime:
             result = ToolResult.error(f"{call.name} failed: {exc.user_message}")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - never let one tool kill the run
+        except Exception as exc:
             log.error("agent.tool_crashed", tool=call.name, error=str(exc), exc_info=True)
             result = ToolResult.error(f"{call.name} raised an unexpected error: {exc}")
 
@@ -453,9 +454,7 @@ class AgentRuntime:
             # Keep both ends: the head usually carries structure, the tail
             # usually carries the cursor needed to continue.
             head, tail = content[: limit * 2 // 3], content[-(limit // 3) :]
-            content = (
-                f"{head}\n\n… [{len(result.content) - limit} characters omitted] …\n\n{tail}"
-            )
+            content = f"{head}\n\n… [{len(result.content) - limit} characters omitted] …\n\n{tail}"
 
         if result.trust is TrustLevel.UNTRUSTED:
             scan = result.metadata.get("scan")
@@ -468,9 +467,7 @@ class AgentRuntime:
                 )
             )
 
-        return ToolResultPart(
-            tool_call_id=call.id, content=content, is_error=result.is_error
-        )
+        return ToolResultPart(tool_call_id=call.id, content=content, is_error=result.is_error)
 
     # ------------------------------------------------------------- context ---
     async def _maybe_compact(
@@ -520,9 +517,7 @@ class AgentRuntime:
         messages = [Message.from_dict(m.content) for m in stored if m.content]
         return _drop_dangling_tool_calls(messages)
 
-    async def _persist(
-        self, conversation_id: str, role: MessageRole, message: Message
-    ) -> None:
+    async def _persist(self, conversation_id: str, role: MessageRole, message: Message) -> None:
         repo = self._deps.conversations
         if repo is None:
             return
@@ -583,19 +578,14 @@ def _drop_dangling_tool_calls(messages: list[Message]) -> list[Message]:
             cleaned.append(message)
             continue
 
-        kept = [p for p in message.content if not isinstance(p, ToolCallPart)]
+        kept: list[ContentPart] = [p for p in message.content if not isinstance(p, ToolCallPart)]
         unanswered = ", ".join(c.name for c in calls if c.id not in resolved)
         kept.append(TextPart(f"[interrupted before these tools completed: {unanswered}]"))
         cleaned.append(Message(role=message.role, content=kept))
 
     # A tool-result turn whose request has just been rewritten is now an orphan
     # in the other direction; drop those too.
-    requested: set[str] = {
-        p.id
-        for m in cleaned
-        for p in m.content
-        if isinstance(p, ToolCallPart)
-    }
+    requested: set[str] = {p.id for m in cleaned for p in m.content if isinstance(p, ToolCallPart)}
     final: list[Message] = []
     for message in cleaned:
         results = [p for p in message.content if isinstance(p, ToolResultPart)]

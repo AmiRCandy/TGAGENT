@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine dev-tool bumps; they are low-risk and reviewing five
+      # separate ruff patches is not a good use of anyone's time.
+      dev-tools:
+        patterns: ["ruff", "mypy", "pytest*", "bandit", "pip-audit", "types-*"]
+    ignore:
+      # Telethon 2.x is a breaking rewrite; migrating is a deliberate task, not
+      # something to be nudged into by a bot.
+      - dependency-name: telethon
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: monthly

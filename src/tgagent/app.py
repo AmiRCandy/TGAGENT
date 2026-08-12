@@ -170,7 +170,7 @@ class Application:
                 self._provider = create_provider(self.settings.llm)
             except TgAgentError:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise ConfigError(f"Could not create the LLM provider: {exc}") from exc
             if key := self.settings.llm.api_key:
                 secret_registry.register(key.get_secret_value())

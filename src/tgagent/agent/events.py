@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class EventKind(str, Enum):
+class EventKind(StrEnum):
     RUN_STARTED = "run_started"
     STEP_STARTED = "step_started"
     #: A chunk of the model's answer, when streaming.

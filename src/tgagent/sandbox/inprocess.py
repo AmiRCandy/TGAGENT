@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import io
 import time
+from concurrent.futures import Future
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any
 
@@ -58,7 +59,9 @@ class InProcessSandbox:
             so scheduling back onto the loop is both necessary and safe.
             """
             call_started = time.perf_counter()
-            future = asyncio.run_coroutine_threadsafe(rpc(method, arguments), loop)
+            future: Future[Any] = asyncio.run_coroutine_threadsafe(
+                _as_coroutine(rpc, method, arguments), loop
+            )
             try:
                 value = future.result(timeout=request.timeout)
             except Exception as exc:
@@ -121,6 +124,11 @@ class InProcessSandbox:
 
     async def close(self) -> None:
         return None
+
+
+async def _as_coroutine(rpc: RpcHandler, method: str, arguments: dict[str, Any]) -> Any:
+    """Adapt the handler to a true coroutine for run_coroutine_threadsafe."""
+    return await rpc(method, arguments)
 
 
 class _Proxy:

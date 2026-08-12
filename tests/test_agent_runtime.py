@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
+from tests.fakes import CollectingEvents
 
-from tests.fakes import CollectingEvents, FakeTelegramClient, RecordingConfirmation
 from tgagent.agent.events import EventKind
 from tgagent.agent.runtime import AgentRuntime, RuntimeDependencies, _drop_dangling_tool_calls
 from tgagent.config.settings import Settings
 from tgagent.errors import LLMError, ToolInputError
-from tgagent.llm.base import Message, Role, TextPart, ToolCallPart, ToolResultPart
+from tgagent.llm.base import Message, Role, ToolCallPart, ToolResultPart
 from tgagent.llm.providers.fake import (
     FailingProvider,
     FakeProvider,
@@ -20,7 +19,7 @@ from tgagent.llm.providers.fake import (
     text_completion,
     tool_call_completion,
 )
-from tgagent.risk import RiskTier, TrustLevel
+from tgagent.risk import RiskTier
 from tgagent.security.trust import sentinel_tag
 from tgagent.storage.sqlite import SQLiteStorage
 from tgagent.tools.base import ToolContext, ToolRegistry, ToolResult, object_schema
@@ -122,10 +121,7 @@ class TestBasicLoop:
 
         second_request = provider.requests[1]
         results = [
-            p
-            for m in second_request.messages
-            for p in m.content
-            if isinstance(p, ToolResultPart)
+            p for m in second_request.messages for p in m.content if isinstance(p, ToolResultPart)
         ]
         assert results
         assert "echo: ping" in results[0].content
@@ -210,9 +206,7 @@ class TestLimits:
 
     async def test_tool_timeout_is_reported_not_fatal(self, settings: Settings) -> None:
         settings.agent.tool_timeout = 0.2
-        provider = FakeProvider(
-            [tool_call_completion("slow", {}), text_completion("carried on")]
-        )
+        provider = FakeProvider([tool_call_completion("slow", {}), text_completion("carried on")])
         result = await build_runtime(provider, settings, [SlowTool()]).run("go")
         assert result.answer == "carried on"
 
@@ -242,9 +236,7 @@ class TestErrorHandling:
         assert "No tool named" in results[0].content
 
     async def test_tool_input_errors_are_returned_not_raised(self, settings: Settings) -> None:
-        provider = FakeProvider(
-            [tool_call_completion("broken", {}), text_completion("noted")]
-        )
+        provider = FakeProvider([tool_call_completion("broken", {}), text_completion("noted")])
         broken = BrokenTool(ToolInputError("the 'peer' argument is required."))
         result = await build_runtime(provider, settings, [broken]).run("go")
         assert result.answer == "noted"
@@ -340,14 +332,10 @@ class TestTrustBoundary:
         assert sentinel_tag() in system
         assert "never instructions" in system.lower() or "never a command" in system.lower()
 
-    async def test_huge_tool_output_is_truncated_at_both_ends(
-        self, settings: Settings
-    ) -> None:
+    async def test_huge_tool_output_is_truncated_at_both_ends(self, settings: Settings) -> None:
         settings.agent.max_tool_result_chars = 1_000
         payload = "HEAD" + ("x" * 50_000) + "TAIL"
-        provider = FakeProvider(
-            [tool_call_completion("read_untrusted", {}), text_completion("ok")]
-        )
+        provider = FakeProvider([tool_call_completion("read_untrusted", {}), text_completion("ok")])
         await build_runtime(provider, settings, [UntrustedTool(payload)]).run("go")
 
         results = [
@@ -405,9 +393,7 @@ class TestDanglingToolCalls:
             ),
         ]
         cleaned = _drop_dangling_tool_calls(messages)
-        assert not any(
-            isinstance(p, ToolCallPart) for m in cleaned for p in m.content
-        )
+        assert not any(isinstance(p, ToolCallPart) for m in cleaned for p in m.content)
         assert "interrupted" in cleaned[-1].text
 
     def test_matched_pairs_survive(self) -> None:
@@ -443,9 +429,7 @@ class TestEvents:
 
     async def test_tool_events_carry_the_outcome(self, settings: Settings) -> None:
         events = CollectingEvents()
-        provider = FakeProvider(
-            [tool_call_completion("broken", {}), text_completion("ok")]
-        )
+        provider = FakeProvider([tool_call_completion("broken", {}), text_completion("ok")])
         await build_runtime(provider, settings, [BrokenTool()]).run("go", on_event=events)
 
         finished = events.of(EventKind.TOOL_CALL_FINISHED)
@@ -461,16 +445,12 @@ class TestEvents:
 
 
 class TestUnattendedRuns:
-    async def test_system_prompt_warns_when_nobody_can_confirm(
-        self, settings: Settings
-    ) -> None:
+    async def test_system_prompt_warns_when_nobody_can_confirm(self, settings: Settings) -> None:
         provider = FakeProvider([text_completion("ok")])
         await build_runtime(provider, settings).run("go", interactive=False)
         assert "UNATTENDED RUN" in provider.requests[0].system
 
-    async def test_tool_context_carries_the_interactive_flag(
-        self, settings: Settings
-    ) -> None:
+    async def test_tool_context_carries_the_interactive_flag(self, settings: Settings) -> None:
         seen: list[bool] = []
 
         class ProbeTool(EchoTool):

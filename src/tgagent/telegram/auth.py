@@ -142,9 +142,7 @@ class LoginFlow:
         from telethon import errors
 
         client = self._manager.client
-        password = await self._prompt(
-            self._request_password, "two-factor password", hint_2fa=True
-        )
+        password = await self._prompt(self._request_password, "two-factor password", hint_2fa=True)
         try:
             await client.sign_in(password=password)
         except errors.PasswordHashInvalidError as exc:
@@ -155,8 +153,7 @@ class LoginFlow:
             return self._phone
         if self._request_phone is None:
             raise ConfigError(
-                "No phone number configured. Set TGAGENT_TELEGRAM__PHONE or supply a "
-                "phone prompt."
+                "No phone number configured. Set TGAGENT_TELEGRAM__PHONE or supply a phone prompt."
             )
         phone = (await self._request_phone()).strip()
         if not phone:
@@ -164,18 +161,10 @@ class LoginFlow:
         return phone
 
     @staticmethod
-    async def _prompt(
-        prompt: CredentialPrompt | None, what: str, *, hint_2fa: bool = False
-    ) -> str:
+    async def _prompt(prompt: CredentialPrompt | None, what: str, *, hint_2fa: bool = False) -> str:
         if prompt is None:
-            extra = (
-                " This account has two-factor authentication enabled."
-                if hint_2fa
-                else ""
-            )
-            raise AuthenticationError(
-                f"A {what} is required but no prompt was supplied.{extra}"
-            )
+            extra = " This account has two-factor authentication enabled." if hint_2fa else ""
+            raise AuthenticationError(f"A {what} is required but no prompt was supplied.{extra}")
         value = (await prompt()).strip()
         if not value:
             raise AuthenticationError(f"An empty {what} was supplied.")

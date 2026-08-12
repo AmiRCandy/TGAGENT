@@ -1,0 +1,64 @@
+# Deployment for the scheduler daemon.
+#
+#   1. cp .env.example .env   and fill it in
+#   2. docker compose run --rm tgagent login      (interactive, one time)
+#   3. docker compose up -d
+#
+# Step 2 matters: signing in needs a code from Telegram, so it cannot happen
+# inside a detached container.
+
+services:
+  tgagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tgagent:latest
+    container_name: tgagent
+    restart: unless-stopped
+
+    env_file: .env
+    environment:
+      TGAGENT_DATA_DIR: /data
+      TGAGENT_LOGGING__FORMAT: json
+      # Inside a container the container *is* the isolation boundary; the
+      # docker backend would need a socket mount, which would be a far larger
+      # hole than it closes.
+      TGAGENT_SANDBOX__BACKEND: subprocess
+
+    volumes:
+      # Session file, database, and downloads. Treat this like a key store.
+      - tgagent-data:/data
+      # Optional: a permission policy maintained outside the image.
+      - ./policy.yaml:/etc/tgagent/policy.yaml:ro
+
+    # Defence in depth around the agent process itself.
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.5"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "tgagent", "version"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  tgagent-data:
+    driver: local

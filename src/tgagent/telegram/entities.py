@@ -83,7 +83,7 @@ class EntityResolver:
                 f"Try an @username, a numeric id, or list your dialogs first "
                 f"so the reference is cached. ({exc})"
             ) from exc
-        except Exception as exc:  # noqa: BLE001 - Telethon raises RPCErrors here
+        except Exception as exc:
             raise EntityResolutionError(f"Resolving {reference!r} failed: {exc}") from exc
 
         self._remember(key, entity)
@@ -97,7 +97,7 @@ class EntityResolver:
 
         try:
             entity = await self._client.get_entity(reference)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise EntityResolutionError(f"Resolving {reference!r} failed: {exc}") from exc
 
         kind = "user"
@@ -136,8 +136,21 @@ class EntityResolver:
 #: Argument names that denote a peer, used when the annotation is unavailable.
 PEER_ARGUMENT_NAMES = frozenset(
     {
-        "peer", "entity", "chat", "channel", "user", "user_id", "chat_id", "channel_id",
-        "from_peer", "to_peer", "dialog", "bot", "target", "from_id", "participant",
+        "peer",
+        "entity",
+        "chat",
+        "channel",
+        "user",
+        "user_id",
+        "chat_id",
+        "channel_id",
+        "from_peer",
+        "to_peer",
+        "dialog",
+        "bot",
+        "target",
+        "from_id",
+        "participant",
     }
 )
 
@@ -183,7 +196,9 @@ async def coerce_argument(
         return await _construct_tl_type(value, resolver, depth)
 
     if isinstance(value, list):
-        return [await coerce_argument(item, annotation, resolver, depth=depth + 1) for item in value]
+        return [
+            await coerce_argument(item, annotation, resolver, depth=depth + 1) for item in value
+        ]
 
     if any(marker in annotation for marker in _PEER_ANNOTATIONS) and isinstance(value, (str, int)):
         return await resolver.input_entity(value)

@@ -114,7 +114,9 @@ class LLMSettings(BaseModel):
 
     #: Reasoning-effort hint. Providers that don't support it ignore it.
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = Field(default=None)
-    thinking: bool = Field(default=True, description="Enable extended/adaptive thinking if supported")
+    thinking: bool = Field(
+        default=True, description="Enable extended/adaptive thinking if supported"
+    )
 
     #: Used for budgeting and compaction decisions, not sent to the provider.
     context_window: int = Field(default=200_000, ge=4_000)
@@ -124,7 +126,9 @@ class LLMSettings(BaseModel):
     retry_base_delay: float = Field(default=1.0, gt=0, le=30)
     retry_max_delay: float = Field(default=30.0, gt=0, le=300)
 
-    stream: bool = Field(default=True, description="Stream responses where the provider supports it")
+    stream: bool = Field(
+        default=True, description="Stream responses where the provider supports it"
+    )
 
     #: Extra provider-specific keyword arguments, passed through untouched.
     extra: dict[str, Any] = Field(default_factory=dict)
@@ -239,10 +243,31 @@ class SandboxSettings(BaseModel):
     #: Modules generated code may import. Anything else raises inside the worker.
     allowed_imports: list[str] = Field(
         default_factory=lambda: [
-            "json", "re", "math", "statistics", "datetime", "time", "collections",
-            "itertools", "functools", "operator", "string", "textwrap", "typing",
-            "dataclasses", "enum", "decimal", "fractions", "random", "uuid",
-            "hashlib", "base64", "csv", "difflib", "unicodedata", "zoneinfo",
+            "json",
+            "re",
+            "math",
+            "statistics",
+            "datetime",
+            "time",
+            "collections",
+            "itertools",
+            "functools",
+            "operator",
+            "string",
+            "textwrap",
+            "typing",
+            "dataclasses",
+            "enum",
+            "decimal",
+            "fractions",
+            "random",
+            "uuid",
+            "hashlib",
+            "base64",
+            "csv",
+            "difflib",
+            "unicodedata",
+            "zoneinfo",
         ]
     )
 
@@ -260,7 +285,9 @@ class SandboxSettings(BaseModel):
 class StorageSettings(BaseModel):
     """Where persistent state lives."""
 
-    database_path: Path | None = Field(default=None, description="Defaults to <data_dir>/tgagent.db")
+    database_path: Path | None = Field(
+        default=None, description="Defaults to <data_dir>/tgagent.db"
+    )
     #: Retention for the audit log. 0 disables pruning.
     audit_retention_days: int = Field(default=90, ge=0, le=3650)
     busy_timeout_ms: int = Field(default=5000, ge=0)
@@ -274,17 +301,41 @@ class MediaSettings(BaseModel):
     #: MIME prefixes that may be downloaded. Empty list means "anything".
     allowed_mime_prefixes: list[str] = Field(
         default_factory=lambda: [
-            "image/", "video/", "audio/", "text/",
-            "application/pdf", "application/json", "application/zip",
-            "application/vnd.openxmlformats", "application/msword",
+            "image/",
+            "video/",
+            "audio/",
+            "text/",
+            "application/pdf",
+            "application/json",
+            "application/zip",
+            "application/vnd.openxmlformats",
+            "application/msword",
         ]
     )
     #: Extensions that are never written to disk regardless of MIME type.
     blocked_extensions: list[str] = Field(
         default_factory=lambda: [
-            ".exe", ".dll", ".scr", ".com", ".pif", ".bat", ".cmd", ".ps1",
-            ".vbs", ".js", ".jse", ".msi", ".msp", ".hta", ".cpl", ".lnk",
-            ".jar", ".apk", ".app", ".dmg", ".sh",
+            ".exe",
+            ".dll",
+            ".scr",
+            ".com",
+            ".pif",
+            ".bat",
+            ".cmd",
+            ".ps1",
+            ".vbs",
+            ".js",
+            ".jse",
+            ".msi",
+            ".msp",
+            ".hta",
+            ".cpl",
+            ".lnk",
+            ".jar",
+            ".apk",
+            ".app",
+            ".dmg",
+            ".sh",
         ]
     )
     retention_days: int = Field(default=7, ge=0, le=3650)

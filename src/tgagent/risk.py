@@ -6,10 +6,10 @@ the security layer can import it without a cycle.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class RiskTier(str, Enum):
+class RiskTier(StrEnum):
     """How much damage an operation can do.
 
     Ordered from least to most consequential. The ordering is meaningful:
@@ -54,7 +54,7 @@ _TIER_ORDER: dict[RiskTier, int] = {
 }
 
 
-class PolicyDecision(str, Enum):
+class PolicyDecision(StrEnum):
     """What the policy says should happen to an operation."""
 
     #: Execute without asking.
@@ -67,7 +67,7 @@ class PolicyDecision(str, Enum):
     DENY = "deny"
 
 
-class TrustLevel(str, Enum):
+class TrustLevel(StrEnum):
     """Where a piece of content came from, and therefore what authority it has.
 
     See ``docs/prompt-injection.md``. The single rule that matters:

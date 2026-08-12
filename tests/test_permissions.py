@@ -23,9 +23,16 @@ class TestClassification:
     @pytest.mark.parametrize(
         "method",
         [
-            "messages.GetHistory", "get_messages", "messages.Search", "get_dialogs",
-            "channels.GetParticipants", "users.GetFullUser", "contacts.ResolveUsername",
-            "iter_messages", "get_entity", "messages.GetSearchCounters",
+            "messages.GetHistory",
+            "get_messages",
+            "messages.Search",
+            "get_dialogs",
+            "channels.GetParticipants",
+            "users.GetFullUser",
+            "contacts.ResolveUsername",
+            "iter_messages",
+            "get_entity",
+            "messages.GetSearchCounters",
         ],
     )
     def test_reads(self, method: str) -> None:
@@ -41,9 +48,15 @@ class TestClassification:
     @pytest.mark.parametrize(
         "method",
         [
-            "messages.SendMessage", "send_message", "messages.EditMessage",
-            "messages.ForwardMessages", "channels.JoinChannel", "messages.SendMedia",
-            "messages.SendReaction", "upload_file", "contacts.AddContact",
+            "messages.SendMessage",
+            "send_message",
+            "messages.EditMessage",
+            "messages.ForwardMessages",
+            "channels.JoinChannel",
+            "messages.SendMedia",
+            "messages.SendReaction",
+            "upload_file",
+            "contacts.AddContact",
         ],
     )
     def test_externally_visible(self, method: str) -> None:
@@ -52,9 +65,14 @@ class TestClassification:
     @pytest.mark.parametrize(
         "method",
         [
-            "messages.DeleteMessages", "messages.DeleteHistory", "delete_messages",
-            "channels.LeaveChannel", "channels.EditBanned", "messages.DeleteChat",
-            "contacts.Block", "delete_dialog",
+            "messages.DeleteMessages",
+            "messages.DeleteHistory",
+            "delete_messages",
+            "channels.LeaveChannel",
+            "channels.EditBanned",
+            "messages.DeleteChat",
+            "contacts.Block",
+            "delete_dialog",
         ],
     )
     def test_destructive(self, method: str) -> None:
@@ -63,9 +81,14 @@ class TestClassification:
     @pytest.mark.parametrize(
         "method",
         [
-            "account.UpdatePasswordSettings", "auth.LogOut", "account.ResetAuthorization",
-            "account.DeleteAccount", "auth.ExportAuthorization", "account.UpdatePrivacy",
-            "edit_2fa", "log_out",
+            "account.UpdatePasswordSettings",
+            "auth.LogOut",
+            "account.ResetAuthorization",
+            "account.DeleteAccount",
+            "auth.ExportAuthorization",
+            "account.UpdatePrivacy",
+            "edit_2fa",
+            "log_out",
         ],
     )
     def test_account_security(self, method: str) -> None:
@@ -114,9 +137,7 @@ class TestAuthorisation:
         assert "no interactive user" in result.reason.lower()
 
     def test_non_interactive_fallback_is_configurable(self) -> None:
-        engine = PermissionEngine(
-            PermissionSettings(non_interactive_decision=PolicyDecision.ALLOW)
-        )
+        engine = PermissionEngine(PermissionSettings(non_interactive_decision=PolicyDecision.ALLOW))
         result = engine.authorize(OperationRequest(method="send_message"), interactive=False)
         assert result.decision is PolicyDecision.ALLOW
 
@@ -142,9 +163,7 @@ class TestAuthorisation:
         # A policy written as `messages.SendMessage` must also govern a call the
         # model makes as `send_message`, or the policy is trivially bypassable.
         engine = PermissionEngine(
-            PermissionSettings(
-                method_overrides={"messages.SendMessage": PolicyDecision.DENY}
-            )
+            PermissionSettings(method_overrides={"messages.SendMessage": PolicyDecision.DENY})
         )
         result = engine.authorize(OperationRequest(method="messages.SendMessage"), interactive=True)
         assert result.decision is PolicyDecision.DENY
@@ -152,7 +171,8 @@ class TestAuthorisation:
     def test_denylist_blocks_writes_to_a_chat(self) -> None:
         engine = PermissionEngine(
             PermissionSettings(
-                chat_denylist=["@work"], defaults={RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW}
+                chat_denylist=["@work"],
+                defaults={RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW},
             )
         )
         blocked = engine.authorize(
@@ -167,7 +187,8 @@ class TestAuthorisation:
     def test_denylist_normalises_the_at_sign_and_case(self) -> None:
         engine = PermissionEngine(
             PermissionSettings(
-                chat_denylist=["@Work"], defaults={RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW}
+                chat_denylist=["@Work"],
+                defaults={RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW},
             )
         )
         result = engine.authorize(

@@ -47,9 +47,7 @@ class TestExecution:
         assert result.result == 42
 
     async def test_exception_is_reported_with_the_users_own_traceback(self, runner: Any) -> None:
-        result = await runner.execute(
-            ExecutionRequest(code="x = 1\ny = x / 0\n"), _deny
-        )
+        result = await runner.execute(ExecutionRequest(code="x = 1\ny = x / 0\n"), _deny)
         assert not result.ok
         assert "ZeroDivisionError" in (result.error or "")
         # The traceback points at the generated program, not at worker.py.
@@ -143,9 +141,7 @@ class TestIsolation:
         result = await runner.execute(ExecutionRequest(code="import tgagent"), _deny)
         assert not result.ok
 
-    async def test_isolation_description_mentions_the_platform_reality(
-        self, runner: Any
-    ) -> None:
+    async def test_isolation_description_mentions_the_platform_reality(self, runner: Any) -> None:
         description = runner.describe_isolation()
         assert "credential" in description.lower()
         if sys.platform == "win32":
@@ -180,9 +176,7 @@ class TestRpcBridge:
             return {"method": method, "q": arguments.get("q")}
 
         result = await runner.execute(
-            ExecutionRequest(
-                code="result = tg.invoke_raw('messages.Search', {'q': 'migration'})"
-            ),
+            ExecutionRequest(code="result = tg.invoke_raw('messages.Search', {'q': 'migration'})"),
             handler,
         )
         assert result.ok
@@ -265,9 +259,7 @@ class TestGatewayBridge:
     async def test_sandbox_origin_is_stamped_on_the_context(self, gateway: Any) -> None:
         from tgagent.telegram.gateway import CallContext
 
-        bridge = GatewayBridge(
-            gateway, context=CallContext(run_id="r", origin="tool"), max_calls=5
-        )
+        bridge = GatewayBridge(gateway, context=CallContext(run_id="r", origin="tool"), max_calls=5)
         # The bridge rewrites origin so the audit trail distinguishes generated
         # code from curated tool use, whatever the caller passed.
         assert bridge._context.origin == "sandbox"  # noqa: SLF001

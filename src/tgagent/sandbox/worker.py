@@ -30,6 +30,7 @@ is precisely why the design assumes the escape and removes the prize.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import io
 import json
 import linecache
@@ -60,7 +61,8 @@ def _read_frame() -> dict[str, Any]:
     line = _frames_in.readline()
     if not line:
         raise SystemExit(0)  # host closed the pipe
-    return json.loads(line)
+    frame: dict[str, Any] = json.loads(line)
+    return frame
 
 
 # ------------------------------------------------------------------ rpc -----
@@ -142,30 +144,36 @@ class TelegramProxy:
 
 # ------------------------------------------------------------- hardening ----
 def _apply_resource_limits(cpu_seconds: int, memory_mb: int) -> list[str]:
-    """Apply POSIX rlimits. Returns notes about what could not be applied."""
+    """Apply POSIX rlimits. Returns notes about what could not be applied.
+
+    Every access goes through ``getattr``: the ``resource`` module is POSIX-only
+    and its constants vary by platform, so naming them directly would both break
+    type checking on Windows and crash on a Unix that lacks one of them.
+    """
     notes: list[str] = []
-    try:
-        import resource
-    except ImportError:
+    if os.name == "nt":
         return ["resource limits are unavailable on this platform (Windows)"]
 
-    def _set(name: str, which: int, soft: int, hard: int | None = None) -> None:
+    resource: Any = __import__("resource")
+    setrlimit = resource.setrlimit
+
+    def _set(name: str, soft: int, hard: int | None = None) -> None:
+        which = getattr(resource, name, None)
+        if which is None:
+            return  # this platform has no such limit
         try:
-            resource.setrlimit(which, (soft, hard if hard is not None else soft))
+            setrlimit(which, (soft, soft if hard is None else hard))
         except (ValueError, OSError) as exc:
             notes.append(f"could not set {name}: {exc}")
 
     if cpu_seconds > 0:
         # Soft below hard so SIGXCPU arrives first and Python can unwind.
-        _set("RLIMIT_CPU", resource.RLIMIT_CPU, cpu_seconds, cpu_seconds + 5)
-    if memory_mb > 0 and hasattr(resource, "RLIMIT_AS"):
-        _set("RLIMIT_AS", resource.RLIMIT_AS, memory_mb * 1024 * 1024)
-    if hasattr(resource, "RLIMIT_NPROC"):
-        _set("RLIMIT_NPROC", resource.RLIMIT_NPROC, 0)  # no forking
-    if hasattr(resource, "RLIMIT_FSIZE"):
-        _set("RLIMIT_FSIZE", resource.RLIMIT_FSIZE, 0)  # no writing files
-    if hasattr(resource, "RLIMIT_CORE"):
-        _set("RLIMIT_CORE", resource.RLIMIT_CORE, 0)
+        _set("RLIMIT_CPU", cpu_seconds, cpu_seconds + 5)
+    if memory_mb > 0:
+        _set("RLIMIT_AS", memory_mb * 1024 * 1024)
+    _set("RLIMIT_NPROC", 0)  # no forking
+    _set("RLIMIT_FSIZE", 0)  # no writing files
+    _set("RLIMIT_CORE", 0)  # no core dumps
     return notes
 
 
@@ -189,17 +197,13 @@ def _neutralise_dangerous_modules() -> None:
             continue
         for attribute in attributes:
             if hasattr(module, attribute):
-                try:
+                with contextlib.suppress(AttributeError, TypeError):
                     setattr(module, attribute, _refuse)
-                except (AttributeError, TypeError):
-                    pass
 
     for name in ("system", "popen", "execv", "execve", "spawnv", "fork", "forkpty"):
         if hasattr(os, name):
-            try:
+            with contextlib.suppress(AttributeError, TypeError):
                 setattr(os, name, _refuse)
-            except (AttributeError, TypeError):
-                pass
 
 
 def _build_import_hook(allowed: set[str]) -> Any:
@@ -226,12 +230,26 @@ def _build_import_hook(allowed: set[str]) -> Any:
 
 #: Builtins removed from what generated code can see. Each one is either a way
 #: to reach the filesystem, a way to reach the interpreter, or a way to block.
+# fmt: off  (columnar table: packed is far more readable than one item per line)
 _REMOVED_BUILTINS = frozenset(
     {
-        "open", "exec", "eval", "compile", "input", "breakpoint", "help",
-        "exit", "quit", "memoryview", "globals", "vars", "__loader__", "__spec__",
+        "open",
+        "exec",
+        "eval",
+        "compile",
+        "input",
+        "breakpoint",
+        "help",
+        "exit",
+        "quit",
+        "memoryview",
+        "globals",
+        "vars",
+        "__loader__",
+        "__spec__",
     }
 )
+# fmt: on
 
 
 def _restricted_builtins(allowed_imports: set[str]) -> dict[str, Any]:
@@ -256,7 +274,7 @@ class _CappedWriter(io.TextIOBase):
         self._limit = limit
         self.truncated = False
 
-    def write(self, text: str) -> int:  # type: ignore[override]
+    def write(self, text: str) -> int:
         if self._size >= self._limit:
             self.truncated = True
             return len(text)
@@ -325,8 +343,8 @@ def main() -> int:
     linecache.cache["<agent-code>"] = (len(code), None, code.splitlines(True), "<agent-code>")
 
     real_stdout, real_stderr = sys.stdout, sys.stderr
-    sys.stdout = capture  # type: ignore[assignment]
-    sys.stderr = capture  # type: ignore[assignment]
+    sys.stdout = capture
+    sys.stderr = capture
     try:
         compiled = compile(code, "<agent-code>", "exec")
         exec(compiled, program_globals)  # noqa: S102 - this is the entire purpose

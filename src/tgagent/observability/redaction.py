@@ -129,8 +129,19 @@ def redact_value(value: Any, *, registry: SecretRegistry | None = None, _depth: 
 
 
 _SECRET_KEY_HINTS: Final = (
-    "api_hash", "apihash", "api_key", "apikey", "password", "passwd", "secret",
-    "token", "auth", "credential", "session_string", "private_key", "phone",
+    "api_hash",
+    "apihash",
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "auth",
+    "credential",
+    "session_string",
+    "private_key",
+    "phone",
 )
 
 

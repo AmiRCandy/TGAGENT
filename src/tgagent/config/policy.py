@@ -64,15 +64,21 @@ def load_policy_file(path: Path) -> dict[str, Any]:
     return data
 
 
-def apply_policy(base: PermissionSettings, data: dict[str, Any], *, source: str) -> PermissionSettings:
+def apply_policy(
+    base: PermissionSettings, data: dict[str, Any], *, source: str
+) -> PermissionSettings:
     """Return a copy of *base* with the policy mapping merged in.
 
     Unknown keys are an error rather than a silent no-op: a typo in a security
     policy that quietly does nothing is exactly the failure mode worth avoiding.
     """
     known = {
-        "defaults", "method_overrides", "chat_allowlist", "chat_denylist",
-        "non_interactive_decision", *_SCALAR_FIELDS,
+        "defaults",
+        "method_overrides",
+        "chat_allowlist",
+        "chat_denylist",
+        "non_interactive_decision",
+        *_SCALAR_FIELDS,
     }
     if unknown := set(data) - known:
         raise PolicyError(
@@ -113,7 +119,9 @@ def apply_policy(base: PermissionSettings, data: dict[str, Any], *, source: str)
             try:
                 setattr(merged, key, caster(data[key]))
             except (TypeError, ValueError) as exc:
-                raise PolicyError(f"`{key}` in {source} must be a {caster.__name__}: {exc}") from exc
+                raise PolicyError(
+                    f"`{key}` in {source} must be a {caster.__name__}: {exc}"
+                ) from exc
 
     return PermissionSettings.model_validate(merged.model_dump())
 
