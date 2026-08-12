@@ -415,6 +415,73 @@ cmd_doctor() {
   tg config policy
 }
 
+# Which model ids the configured endpoint will actually accept.
+#
+# A wrong TGAGENT_LLM__MODEL is the single most common reason a run dies before it
+# starts, and it is needlessly hard to diagnose: gateways answer with 404 and
+# frequently cannot even echo back the name they failed to resolve, so the error
+# reads "Model 'N/A' not found". This asks the endpoint directly.
+cmd_models() {
+  require_venv
+  require_env_file
+  step "Asking the configured endpoint what it serves"
+  "$PY" - <<'PYTHON'
+import asyncio
+
+from tgagent.config.settings import load_settings
+
+settings = load_settings().llm
+print(f"  provider : {settings.provider}")
+print(f"  base_url : {settings.base_url or '(provider default)'}")
+print(f"  model    : {settings.model}   <- TGAGENT_LLM__MODEL")
+print()
+
+
+async def main() -> int:
+    try:
+        import openai
+    except ImportError:
+        print('  The openai SDK is not installed: pip install "tgagent[openai]"')
+        return 1
+
+    kwargs = {"timeout": 30.0, "max_retries": 0}
+    if settings.api_key is not None:
+        kwargs["api_key"] = settings.api_key.get_secret_value()
+    elif settings.base_url:
+        kwargs["api_key"] = "not-required"
+    if settings.base_url:
+        kwargs["base_url"] = settings.base_url
+
+    client = openai.AsyncOpenAI(**kwargs)
+    try:
+        listing = await client.models.list()
+        ids = sorted(m.id for m in listing.data)
+    except Exception as exc:
+        print(f"  Could not list models: {exc}")
+        print("  Not every gateway implements /models; check its documentation.")
+        return 1
+    finally:
+        await client.close()
+
+    if not ids:
+        print("  The endpoint returned an empty catalogue.")
+        return 1
+
+    print(f"  {len(ids)} model(s) available:")
+    for identifier in ids:
+        mark = "  <- currently configured" if identifier == settings.model else ""
+        print(f"    {identifier}{mark}")
+    if settings.model not in ids:
+        print()
+        print(f"  {settings.model!r} is NOT in that list — that is why runs fail with 404.")
+        print("  Set TGAGENT_LLM__MODEL in .env to one of the ids above.")
+    return 0
+
+
+raise SystemExit(asyncio.run(main()))
+PYTHON
+}
+
 cmd_login() {
   require_venv
   require_env_file
@@ -618,6 +685,7 @@ ${C_BOLD}Getting started${C_RESET}
   ${C_BOLD}install${C_RESET}            Everything at once: dependencies, credentials, sign-in
   setup              Just the environment: ./.venv, dependencies, a seeded .env
   doctor             Report what is configured, what is not, and what the sandbox isolates
+  models             List the model ids your configured endpoint actually accepts
   login              Sign in to Telegram (interactive, needed once)
 
 ${C_BOLD}Using it${C_RESET}
@@ -657,6 +725,7 @@ main() {
   fix) cmd_fix "$@" ;;
   test) cmd_test "$@" ;;
   doctor) cmd_doctor "$@" ;;
+  models) cmd_models "$@" ;;
   login) cmd_login "$@" ;;
   listen) cmd_listen "$@" ;;
   run) cmd_run "$@" ;;
