@@ -237,9 +237,11 @@ class _ConversationRepo:
                 (conversation_id,),
             )
         else:
+            # `rowid` must be projected explicitly: `SELECT *` omits it, so the
+            # outer ORDER BY would have no such column to sort on.
             rows = await self._s.query(
-                "SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? "
-                "ORDER BY rowid DESC LIMIT ?) ORDER BY rowid",
+                "SELECT * FROM (SELECT rowid AS _seq, * FROM messages "
+                "WHERE conversation_id = ? ORDER BY rowid DESC LIMIT ?) ORDER BY _seq",
                 (conversation_id, limit),
             )
         return [self._row_to_message(r) for r in rows]

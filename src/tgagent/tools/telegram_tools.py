@@ -297,7 +297,11 @@ class GetParticipantsTool(_TelegramTool):
 
 class GetMeTool(_TelegramTool):
     name = "telegram_get_me"
-    description = "Return the signed-in account's own id, username, and name."
+    description = (
+        "Return the signed-in account's own id, username, and display name. Use this "
+        "to tell the user's own messages apart from other people's, and to resolve "
+        "first-person references like 'messages I sent'."
+    )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema({})
 

@@ -28,7 +28,7 @@ from pathlib import Path
 from tgagent.config.settings import SandboxSettings
 from tgagent.errors import SandboxUnavailable
 from tgagent.observability.logging import get_logger
-from tgagent.sandbox.subprocess_runner import WORKER_PATH, SubprocessSandbox
+from tgagent.sandbox.subprocess_runner import WORKER_PATH, SubprocessSandbox, stream_limit
 
 log = get_logger(__name__)
 
@@ -92,4 +92,5 @@ class DockerSandbox(SubprocessSandbox):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=stream_limit(s),
         )

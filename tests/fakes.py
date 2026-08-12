@@ -1,0 +1,331 @@
+"""Test doubles.
+
+CI must never touch a real Telegram account or a real model provider, so
+everything external has a fake here. The fakes are deliberately *behavioural*
+rather than mock-based: ``FakeTelegramClient`` really returns message-shaped
+objects and really raises Telethon's error types, so the code paths that matter
+(serialisation, error translation, pagination) are genuinely exercised.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from tgagent.security.confirm import ConfirmationOutcome, ConfirmationRequest
+
+
+# ------------------------------------------------------------- telegram -----
+class FakePeer:
+    """Stands in for an InputPeer; identity is all the tests need."""
+
+    def __init__(self, identifier: int | str) -> None:
+        self.id = identifier
+        self.user_id = identifier
+
+    def __repr__(self) -> str:
+        return f"FakePeer({self.id!r})"
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, FakePeer) and other.id == self.id
+
+    def __hash__(self) -> int:
+        return hash(("FakePeer", str(self.id)))
+
+
+class FakeEntity:
+    def __init__(
+        self,
+        identifier: int,
+        *,
+        username: str | None = None,
+        first_name: str = "",
+        title: str = "",
+        broadcast: bool = False,
+        megagroup: bool = False,
+    ) -> None:
+        self.id = identifier
+        self.username = username
+        self.first_name = first_name
+        self.last_name = ""
+        self.title = title
+        self.broadcast = broadcast
+        self.megagroup = megagroup
+        self.bot = False
+        self.phone = None
+
+
+class FakeMessage:
+    """Shaped like a Telethon ``Message`` for the fields the project reads."""
+
+    def __init__(
+        self,
+        identifier: int,
+        text: str = "",
+        *,
+        sender_id: int = 1,
+        date: datetime | None = None,
+        out: bool = False,
+        media: Any = None,
+        chat_id: int = -100123,
+    ) -> None:
+        self.id = identifier
+        self.message = text
+        self.date = date or datetime(2026, 1, 15, 12, 0, tzinfo=UTC) + timedelta(minutes=identifier)
+        self.out = out
+        self.media = media
+        self.chat_id = chat_id
+        self.sender_id = sender_id
+        self.from_id = None
+        self.reply_to = None
+        self.fwd_from = None
+        self.edit_date = None
+        self.pinned = False
+        self.views = None
+        self.reactions = None
+        self.action = None
+
+
+class FakeDocument:
+    def __init__(
+        self,
+        *,
+        size: int = 1024,
+        mime_type: str = "application/pdf",
+        file_name: str = "report.pdf",
+    ) -> None:
+        self.id = 999
+        self.size = size
+        self.mime_type = mime_type
+        self.attributes = [type("Attr", (), {"file_name": file_name})()]
+
+
+class FakeMedia:
+    def __init__(self, document: FakeDocument | None = None) -> None:
+        self.document = document or FakeDocument()
+        self.photo = None
+        self.webpage = None
+        self.poll = None
+        self.geo = None
+        self.phone_number = None
+
+
+class FakeDialog:
+    def __init__(
+        self,
+        identifier: int,
+        name: str,
+        *,
+        unread: int = 0,
+        is_user: bool = True,
+        message: FakeMessage | None = None,
+    ) -> None:
+        self.id = identifier
+        self.name = name
+        self.unread_count = unread
+        self.unread_mentions_count = 0
+        self.is_user = is_user
+        self.is_group = not is_user
+        self.is_channel = False
+        self.pinned = False
+        self.archived = False
+        self.entity = FakeEntity(identifier, username=name.lstrip("@") if is_user else None)
+        self.message = message
+
+
+class FakeTelegramClient:
+    """A Telethon client stand-in that records what it was asked to do."""
+
+    def __init__(self, *, messages: list[FakeMessage] | None = None) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.raw_calls: list[Any] = []
+        self._connected = True
+        self._authorized = True
+        self.messages = messages or [
+            FakeMessage(i, f"message {i}", sender_id=1 if i % 2 else 2) for i in range(1, 21)
+        ]
+        #: Set to an exception to make the next friendly call raise it.
+        self.next_error: Exception | None = None
+        self.sent: list[dict[str, Any]] = []
+        self.downloads: list[str] = []
+
+    # lifecycle -------------------------------------------------------------
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self) -> None:
+        self._connected = True
+
+    async def disconnect(self) -> None:
+        self._connected = False
+
+    async def is_user_authorized(self) -> bool:
+        return self._authorized
+
+    @property
+    def disconnected(self) -> asyncio.Future[None]:
+        return asyncio.get_event_loop().create_future()
+
+    # entity resolution -----------------------------------------------------
+    async def get_input_entity(self, peer: Any) -> FakePeer:
+        self.calls.append(("get_input_entity", {"peer": peer}))
+        if peer in ("@missing", "missing"):
+            raise ValueError("No user has that username")
+        return FakePeer(peer)
+
+    async def get_entity(self, peer: Any) -> FakeEntity:
+        self.calls.append(("get_entity", {"peer": peer}))
+        if peer in ("@missing", "missing"):
+            raise ValueError("No user has that username")
+        name = str(peer).lstrip("@")
+        return FakeEntity(12345, username=name if not str(peer).lstrip("-").isdigit() else None,
+                          first_name=name.title())
+
+    async def get_me(self) -> FakeEntity:
+        return FakeEntity(1, username="owner", first_name="Owner")
+
+    # reads -----------------------------------------------------------------
+    async def get_messages(self, entity: Any = None, **kwargs: Any) -> list[FakeMessage]:
+        self._maybe_raise()
+        self.calls.append(("get_messages", {"entity": entity, **kwargs}))
+        if ids := kwargs.get("ids"):
+            wanted = set(ids if isinstance(ids, list) else [ids])
+            return [m for m in self.messages if m.id in wanted]
+        limit = int(kwargs.get("limit") or 10)
+        rows = self.messages
+        if search := kwargs.get("search"):
+            rows = [m for m in rows if search.lower() in m.message.lower()]
+        if kwargs.get("reverse"):
+            return rows[:limit]
+        return list(reversed(rows))[:limit]
+
+    async def get_dialogs(self, **kwargs: Any) -> list[FakeDialog]:
+        self._maybe_raise()
+        self.calls.append(("get_dialogs", kwargs))
+        return [
+            FakeDialog(1, "@alex", unread=3, message=FakeMessage(20, "see you then")),
+            FakeDialog(-100123, "Project X", unread=0, is_user=False),
+            FakeDialog(2, "@john", unread=1),
+        ][: int(kwargs.get("limit") or 10)]
+
+    async def get_participants(self, entity: Any = None, **kwargs: Any) -> list[FakeEntity]:
+        self.calls.append(("get_participants", {"entity": entity, **kwargs}))
+        return [FakeEntity(1, username="alex"), FakeEntity(2, username="john")]
+
+    # writes ----------------------------------------------------------------
+    async def send_message(self, entity: Any = None, message: str = "", **kwargs: Any) -> FakeMessage:
+        self._maybe_raise()
+        self.calls.append(("send_message", {"entity": entity, "message": message, **kwargs}))
+        self.sent.append({"entity": entity, "message": message})
+        return FakeMessage(999, message, out=True)
+
+    async def edit_message(self, entity: Any = None, **kwargs: Any) -> FakeMessage:
+        self.calls.append(("edit_message", {"entity": entity, **kwargs}))
+        return FakeMessage(kwargs.get("message", 1), kwargs.get("text", ""), out=True)
+
+    async def delete_messages(self, entity: Any = None, **kwargs: Any) -> list[Any]:
+        self._maybe_raise()
+        self.calls.append(("delete_messages", {"entity": entity, **kwargs}))
+        return [object()]
+
+    async def forward_messages(self, entity: Any = None, **kwargs: Any) -> list[FakeMessage]:
+        self.calls.append(("forward_messages", {"entity": entity, **kwargs}))
+        return [FakeMessage(1000, "forwarded")]
+
+    async def send_read_acknowledge(self, entity: Any = None, **kwargs: Any) -> bool:
+        self.calls.append(("send_read_acknowledge", {"entity": entity, **kwargs}))
+        return True
+
+    async def download_media(self, message: Any, file: str | None = None, **kwargs: Any) -> str:
+        self.calls.append(("download_media", {"file": file}))
+        self.downloads.append(str(file))
+        if file:
+            from pathlib import Path
+
+            path = Path(file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"%PDF-1.4 fake content")
+        return str(file)
+
+    # raw TL ----------------------------------------------------------------
+    async def __call__(self, request: Any) -> Any:
+        self._maybe_raise()
+        self.raw_calls.append(request)
+        name = type(request).__name__
+        if "Search" in name:
+            return type(
+                "Result",
+                (),
+                {"messages": self.messages[:5], "count": len(self.messages), "chats": [], "users": []},
+            )()
+        return type("Result", (), {"ok": True, "request": name})()
+
+    def _maybe_raise(self) -> None:
+        if self.next_error is not None:
+            error, self.next_error = self.next_error, None
+            raise error
+
+
+class FakeClientManager:
+    """Stands in for :class:`~tgagent.telegram.client.TelegramClientManager`."""
+
+    def __init__(self, client: FakeTelegramClient | None = None) -> None:
+        self._client = client or FakeTelegramClient()
+        self._session_path = "/tmp/fake.session"
+        self.me = FakeEntity(1, username="owner", first_name="Owner")
+
+    @property
+    def client(self) -> FakeTelegramClient:
+        return self._client
+
+    @property
+    def connected(self) -> bool:
+        return self._client.is_connected()
+
+    async def ensure_connected(self) -> None:
+        if not self._client.is_connected():
+            await self._client.connect()
+
+    async def start(self, **_kwargs: Any) -> FakeTelegramClient:
+        return self._client
+
+    async def stop(self) -> None:
+        await self._client.disconnect()
+
+
+# --------------------------------------------------------- confirmations ----
+@dataclass
+class RecordingConfirmation:
+    """A confirmation provider with a scripted answer, for policy tests."""
+
+    approve: bool = True
+    interactive: bool = True
+    requests: list[ConfirmationRequest] = field(default_factory=list)
+    #: Per-method overrides, e.g. ``{"send_message": False}``.
+    answers: dict[str, bool] = field(default_factory=dict)
+
+    async def confirm(self, request: ConfirmationRequest) -> ConfirmationOutcome:
+        self.requests.append(request)
+        approved = self.answers.get(request.method, self.approve)
+        return ConfirmationOutcome(
+            approved=approved, reason="scripted answer in tests"
+        )
+
+
+# ---------------------------------------------------------------- misc ------
+class CollectingEvents:
+    """Collects runtime events so tests can assert on the sequence."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def __call__(self, event: Any) -> None:
+        self.events.append(event)
+
+    def kinds(self) -> list[str]:
+        return [e.kind.value for e in self.events]
+
+    def of(self, kind: Any) -> list[Any]:
+        return [e for e in self.events if e.kind is kind]

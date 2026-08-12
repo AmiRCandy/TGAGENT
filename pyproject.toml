@@ -40,6 +40,10 @@ dependencies = [
   "aiosqlite>=0.20",
   # Scheduling
   "croniter>=2.0",
+  # zoneinfo reads the *system* tz database, which Windows lacks entirely and
+  # slim Linux images frequently omit. Bundling it makes cron schedules with a
+  # timezone work identically everywhere.
+  "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

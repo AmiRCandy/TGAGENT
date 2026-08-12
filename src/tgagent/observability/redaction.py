@@ -111,7 +111,11 @@ def redact_value(value: Any, *, registry: SecretRegistry | None = None, _depth: 
         return {
             k: (
                 PLACEHOLDER
-                if _is_secret_key(k)
+                # Key-based redaction applies only to strings. A number is never
+                # a credential in this system, and blanking `input_tokens` or
+                # `max_tokens` because the key contains "token" destroys the
+                # observability the logs exist for.
+                if isinstance(v, str) and _is_secret_key(k)
                 else redact_value(v, registry=registry, _depth=_depth + 1)
             )
             for k, v in value.items()

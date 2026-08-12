@@ -144,7 +144,8 @@ _READ_ONLY_METHODS = frozenset(
 #: Prefixes that make an *unknown* method look like a read.
 _READ_PREFIXES = ("get", "search", "resolve", "check", "is", "iter", "find", "list", "read")
 
-_TL_NAME = re.compile(r"^(?:(?P<ns>[a-z][a-z0-9_]*)\.)?(?P<name>\w+?)(?:Request)?$")
+#: Applied to an already-lowercased name, so ``Request`` is matched as ``request``.
+_TL_NAME = re.compile(r"^(?:(?P<ns>[a-z][a-z0-9_]*)\.)?(?P<name>\w+?)(?:request)?$")
 
 
 @dataclass(slots=True, frozen=True)
@@ -189,12 +190,17 @@ class AuthorizationResult:
 
 
 def normalise_method(method: str) -> tuple[str, str]:
-    """Split a method name into ``(namespace, bare_name_lowercased)``."""
-    cleaned = method.strip()
+    """Split a method name into ``(namespace, bare_name)``, both lowercased.
+
+    Case-insensitive on purpose: a policy must govern ``messages.SendMessage``
+    and ``MESSAGES.SENDMESSAGE`` identically, or the classifier is bypassable by
+    changing capitalisation.
+    """
+    cleaned = method.strip().lower()
     match = _TL_NAME.match(cleaned)
     if match is None:
-        return "", cleaned.lower()
-    return (match.group("ns") or "").lower(), match.group("name").lower()
+        return "", cleaned
+    return (match.group("ns") or ""), match.group("name")
 
 
 def classify(method: str) -> RiskTier:

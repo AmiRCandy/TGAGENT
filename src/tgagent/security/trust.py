@@ -99,4 +99,16 @@ def trust_of(source: str) -> TrustLevel:
 
 
 def _escape_attr(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', "'").replace("\n", " ")[:200]
+    """Make a string safe inside a tag attribute.
+
+    ``<`` and ``>`` matter as much as the quote character: leaving them would
+    let a crafted ``source`` close the opening tag early and put the rest of the
+    content outside the fence.
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', "'")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", " ")[:200]
+    )

@@ -201,6 +201,26 @@ class PermissionSettings(BaseModel):
     #: account from tripping Telegram's spam heuristics if the agent loops.
     min_seconds_between_writes: float = Field(default=1.0, ge=0.0, le=60.0)
 
+    @model_validator(mode="after")
+    def _fill_missing_tiers(self) -> PermissionSettings:
+        """Ensure every risk tier has a decision.
+
+        A caller (or a policy file) that specifies only some tiers must not
+        silently leave the rest undefined — the lookup would fall through to
+        DENY and, say, break all reads because someone tightened `destructive`.
+        Missing tiers inherit the conservative baseline instead.
+        """
+        baseline = {
+            RiskTier.READ_ONLY: PolicyDecision.ALLOW,
+            RiskTier.REVERSIBLE: PolicyDecision.ALLOW,
+            RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.CONFIRM,
+            RiskTier.DESTRUCTIVE: PolicyDecision.CONFIRM,
+            RiskTier.ACCOUNT_SECURITY: PolicyDecision.DENY,
+        }
+        for tier, decision in baseline.items():
+            self.defaults.setdefault(tier, decision)
+        return self
+
 
 class SandboxSettings(BaseModel):
     """Code-execution isolation.

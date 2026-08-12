@@ -54,10 +54,15 @@ from tgagent.storage.base import AuditRepository
 from tgagent.storage.models import AuditEntry
 from tgagent.telegram.client import TelegramClientManager
 from tgagent.telegram.entities import (
+    PEER_ARGUMENT_NAMES,
     EntityResolver,
     coerce_argument,
     extract_target,
 )
+
+#: Annotation stand-in used when a **kwargs parameter has no declared type but
+#: its name says it is a peer, so string references still get resolved.
+_PEER_HINT = "TypeInputPeer"
 from tgagent.telegram.serialize import (
     extract_text_fields,
     to_jsonable,
@@ -346,10 +351,21 @@ class TelegramGateway:
         except (TypeError, ValueError):
             return arguments
 
+        # Several Telethon methods take **kwargs and forward them; rejecting
+        # names the signature does not list would make those uncallable.
+        accepts_extra = any(
+            p.kind is p.VAR_KEYWORD for p in signature.parameters.values()
+        )
+
         prepared: dict[str, Any] = {}
         for name, value in arguments.items():
             parameter = signature.parameters.get(name)
             if parameter is None:
+                if accepts_extra:
+                    prepared[name] = await coerce_argument(
+                        value, _PEER_HINT if name in PEER_ARGUMENT_NAMES else "", self.resolver
+                    )
+                    continue
                 valid = ", ".join(p for p in signature.parameters if p != "self")
                 raise TelegramError(
                     f"{method}() has no parameter {name!r}. Valid parameters: {valid}."

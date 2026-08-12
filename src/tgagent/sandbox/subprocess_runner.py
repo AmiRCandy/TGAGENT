@@ -49,6 +49,18 @@ _ENV_ALLOWLIST = (
 )
 
 
+def stream_limit(settings: SandboxSettings) -> int:
+    """Buffer size for the worker's stdout reader.
+
+    Frames are newline-delimited, and the final ``done`` frame carries the whole
+    captured stdout on one line. asyncio's 64 KiB default therefore raises
+    "Separator is not found" for any program that prints more than that — so the
+    limit is derived from the configured output cap, with headroom for JSON
+    escaping and the rest of the frame.
+    """
+    return max(256 * 1024, settings.max_output_bytes * 4)
+
+
 def build_child_environment() -> dict[str, str]:
     """A minimal environment for the worker process."""
     env = {name: os.environ[name] for name in _ENV_ALLOWLIST if name in os.environ}
@@ -173,6 +185,7 @@ class SubprocessSandbox:
             stderr=asyncio.subprocess.PIPE,
             cwd=str(workdir),
             env=build_child_environment(),
+            limit=stream_limit(self._settings),
         )
 
     async def _pump(

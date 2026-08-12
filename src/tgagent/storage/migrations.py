@@ -33,7 +33,11 @@ _V1: Final = (
         token_estimate  INTEGER NOT NULL DEFAULT 0
     )
     """,
-    "CREATE INDEX idx_messages_conversation ON messages(conversation_id, rowid)",
+    # Indexed on conversation_id alone: SQLite stores the rowid as the index
+    # key, so entries are already in insertion order within each conversation —
+    # which is exactly the order get_messages() reads them in. (`rowid` cannot
+    # appear in an index expression.)
+    "CREATE INDEX idx_messages_conversation ON messages(conversation_id)",
     """
     CREATE TABLE memory_facts (
         id          TEXT PRIMARY KEY,

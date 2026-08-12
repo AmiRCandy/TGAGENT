@@ -116,7 +116,11 @@ class MemoryReadTool:
 
 class MemoryDeleteTool:
     name = "memory_delete"
-    description = "Forget a stored fact by key. Use when something is no longer true."
+    description = (
+        "Forget a stored fact by key. Use this when a remembered fact has become "
+        "wrong — a project ended, a preference changed, a contact moved — so it "
+        "stops influencing future runs."
+    )
     risk_hint = RiskTier.REVERSIBLE
     parameters = object_schema(
         {"key": string_field("The key to delete.")}, required=["key"]
