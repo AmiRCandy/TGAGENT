@@ -1,0 +1,382 @@
+"""Typed, validated, environment-driven configuration.
+
+Every tunable in the project lives here. Nothing else reads ``os.environ`` and
+nothing else hard-codes a limit — that is the point.
+
+Environment variables use the ``TGAGENT_`` prefix and ``__`` to descend into
+nested sections::
+
+    TGAGENT_TELEGRAM__API_ID=123456
+    TGAGENT_LLM__MODEL=claude-opus-5
+    TGAGENT_SANDBOX__BACKEND=docker
+
+A ``.env`` file in the working directory is loaded automatically. Secrets are
+held as :class:`~pydantic.SecretStr`, which keeps them out of ``repr()``,
+tracebacks, and accidental log lines.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from tgagent.errors import ConfigError
+from tgagent.risk import PolicyDecision, RiskTier
+
+
+def default_data_dir() -> Path:
+    """Per-user data directory, honouring XDG on POSIX and APPDATA on Windows."""
+    if override := os.environ.get("TGAGENT_DATA_DIR"):
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "tgagent"
+
+
+class TelegramSettings(BaseModel):
+    """MTProto client credentials and connection behaviour.
+
+    ``api_id`` and ``api_hash`` come from https://my.telegram.org/apps and
+    identify *the application*, not the account. They are still secrets.
+    """
+
+    api_id: int = Field(default=0, description="API ID from my.telegram.org/apps")
+    api_hash: SecretStr = Field(default=SecretStr(""), description="API hash")
+    phone: str | None = Field(default=None, description="E.164 phone number, e.g. +15551234567")
+
+    session_name: str = Field(default="tgagent", description="Session file stem")
+    session_dir: Path | None = Field(
+        default=None, description="Directory holding session files; defaults to <data_dir>/sessions"
+    )
+
+    # Presented to Telegram in the "active sessions" list. Being honest here is
+    # deliberate: the account owner should be able to recognise this client.
+    device_model: str = Field(default="tgagent")
+    system_version: str = Field(default="1.0")
+    app_version: str = Field(default="tgagent")
+    lang_code: str = Field(default="en")
+
+    connection_retries: int = Field(default=5, ge=0, le=100)
+    request_retries: int = Field(default=3, ge=0, le=20)
+    retry_delay: float = Field(default=1.0, ge=0.0, le=60.0)
+    timeout: float = Field(default=30.0, gt=0, le=600)
+
+    #: FLOOD_WAIT values below this are slept through transparently by Telethon.
+    #: Above it, the error surfaces so the agent can decide what to do.
+    flood_sleep_threshold: int = Field(default=60, ge=0, le=3600)
+
+    #: e.g. "socks5://user:pass@host:1080". Parsed by :func:`parse_proxy`.
+    proxy: SecretStr | None = Field(default=None)
+
+    #: Wait at most this long for an interactive code/password during login.
+    login_timeout: float = Field(default=300.0, gt=0)
+
+    @field_validator("phone")
+    @classmethod
+    def _check_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().replace(" ", "").replace("-", "")
+        if not v.startswith("+") or not v[1:].isdigit() or not 7 <= len(v) <= 16:
+            raise ValueError("phone must be E.164, e.g. +15551234567")
+        return v
+
+    def is_configured(self) -> bool:
+        return self.api_id > 0 and bool(self.api_hash.get_secret_value())
+
+
+class LLMSettings(BaseModel):
+    """Model provider selection and generation parameters.
+
+    ``provider`` names an entry in :mod:`tgagent.llm.registry`; nothing about the
+    rest of the system knows which vendor is in use.
+    """
+
+    provider: str = Field(default="anthropic", description="Registered provider name")
+    model: str = Field(default="claude-opus-5")
+    api_key: SecretStr | None = Field(default=None)
+    base_url: str | None = Field(
+        default=None, description="Override the provider endpoint (OpenAI-compatible gateways)"
+    )
+
+    max_output_tokens: int = Field(default=8192, ge=64, le=200_000)
+
+    #: ``None`` means "do not send the parameter". Several current models reject
+    #: sampling parameters outright, so an explicit opt-in is the only safe default.
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+
+    #: Reasoning-effort hint. Providers that don't support it ignore it.
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = Field(default=None)
+    thinking: bool = Field(default=True, description="Enable extended/adaptive thinking if supported")
+
+    #: Used for budgeting and compaction decisions, not sent to the provider.
+    context_window: int = Field(default=200_000, ge=4_000)
+
+    timeout: float = Field(default=180.0, gt=0, le=3600)
+    max_retries: int = Field(default=4, ge=0, le=10)
+    retry_base_delay: float = Field(default=1.0, gt=0, le=30)
+    retry_max_delay: float = Field(default=30.0, gt=0, le=300)
+
+    stream: bool = Field(default=True, description="Stream responses where the provider supports it")
+
+    #: Extra provider-specific keyword arguments, passed through untouched.
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentSettings(BaseModel):
+    """Execution budgets for a single agent run.
+
+    These are the guardrails that stop a confused model from looping forever or
+    spending an unbounded amount of money.
+    """
+
+    max_steps: int = Field(default=25, ge=1, le=500, description="LLM round trips per run")
+    max_tool_calls: int = Field(default=100, ge=1, le=2000)
+    max_consecutive_tool_errors: int = Field(default=4, ge=1, le=50)
+
+    step_timeout: float = Field(default=300.0, gt=0, description="Seconds for one LLM+tools step")
+    run_timeout: float = Field(default=1800.0, gt=0, description="Seconds for a whole run")
+    tool_timeout: float = Field(default=120.0, gt=0, description="Default per-tool-call timeout")
+
+    #: Fraction of the context window at which older turns get compacted.
+    compaction_threshold: float = Field(default=0.7, gt=0.1, le=0.95)
+    #: Never compact away the most recent N messages — they carry the live task.
+    compaction_keep_recent: int = Field(default=6, ge=2, le=100)
+
+    #: How many prior turns of an agent conversation to reload from storage.
+    history_limit: int = Field(default=40, ge=0, le=1000)
+
+    #: Cap on a single tool result before it is truncated, in characters.
+    max_tool_result_chars: int = Field(default=24_000, ge=500, le=500_000)
+
+    parallel_tool_calls: bool = Field(default=True)
+    max_parallel_tools: int = Field(default=4, ge=1, le=32)
+
+
+class PermissionSettings(BaseModel):
+    """Permission policy: defaults, overrides, and where the YAML lives."""
+
+    policy_file: Path | None = Field(default=None, description="YAML policy; overrides defaults")
+
+    #: Baseline decision per risk tier. Deliberately conservative.
+    defaults: dict[RiskTier, PolicyDecision] = Field(
+        default_factory=lambda: {
+            RiskTier.READ_ONLY: PolicyDecision.ALLOW,
+            RiskTier.REVERSIBLE: PolicyDecision.ALLOW,
+            RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.CONFIRM,
+            RiskTier.DESTRUCTIVE: PolicyDecision.CONFIRM,
+            RiskTier.ACCOUNT_SECURITY: PolicyDecision.DENY,
+        }
+    )
+
+    #: Per-method overrides, e.g. ``{"messages.SendMessage": "deny"}``.
+    method_overrides: dict[str, PolicyDecision] = Field(default_factory=dict)
+
+    #: If non-empty, only these chat identifiers may be *written to*.
+    chat_allowlist: list[str] = Field(default_factory=list)
+    #: Chats that may never be written to. Takes precedence over the allowlist.
+    chat_denylist: list[str] = Field(default_factory=list)
+
+    #: With no interactive user attached (scheduled runs), CONFIRM becomes this.
+    non_interactive_decision: PolicyDecision = Field(default=PolicyDecision.DENY)
+
+    #: Seconds to wait at a confirmation prompt before treating it as declined.
+    confirmation_timeout: float = Field(default=300.0, gt=0)
+
+    #: Global kill switch: force every write operation to DENY.
+    read_only_mode: bool = Field(default=False)
+
+    #: Cap on outbound messages per run, as a blast-radius limit independent of
+    #: per-call confirmation.
+    max_outbound_per_run: int = Field(default=20, ge=0, le=1000)
+
+    #: Minimum spacing between externally-visible operations. Protects the
+    #: account from tripping Telegram's spam heuristics if the agent loops.
+    min_seconds_between_writes: float = Field(default=1.0, ge=0.0, le=60.0)
+
+
+class SandboxSettings(BaseModel):
+    """Code-execution isolation.
+
+    ``backend`` picks the strategy; see ``docs/sandboxing.md`` for exactly what
+    each one does and does not guarantee on each platform.
+    """
+
+    backend: Literal["subprocess", "docker", "inprocess", "disabled"] = Field(default="subprocess")
+
+    timeout: float = Field(default=60.0, gt=0, le=900, description="Wall clock per execution")
+    max_output_bytes: int = Field(default=256_000, ge=1_000, le=10_000_000)
+    max_memory_mb: int = Field(default=512, ge=64, le=8192)
+    max_cpu_seconds: int = Field(default=60, ge=1, le=900)
+
+    #: Modules generated code may import. Anything else raises inside the worker.
+    allowed_imports: list[str] = Field(
+        default_factory=lambda: [
+            "json", "re", "math", "statistics", "datetime", "time", "collections",
+            "itertools", "functools", "operator", "string", "textwrap", "typing",
+            "dataclasses", "enum", "decimal", "fractions", "random", "uuid",
+            "hashlib", "base64", "csv", "difflib", "unicodedata", "zoneinfo",
+        ]
+    )
+
+    #: Docker-specific. Only consulted when ``backend == "docker"``.
+    docker_image: str = Field(default="python:3.12-slim")
+    docker_network: str = Field(default="none")
+    docker_extra_args: list[str] = Field(default_factory=list)
+
+    #: Max concurrent RPC calls a single execution may have in flight.
+    max_concurrent_rpc: int = Field(default=4, ge=1, le=32)
+    #: Hard cap on total RPC calls in one execution — stops runaway loops.
+    max_rpc_calls: int = Field(default=200, ge=1, le=10_000)
+
+
+class StorageSettings(BaseModel):
+    """Where persistent state lives."""
+
+    database_path: Path | None = Field(default=None, description="Defaults to <data_dir>/tgagent.db")
+    #: Retention for the audit log. 0 disables pruning.
+    audit_retention_days: int = Field(default=90, ge=0, le=3650)
+    busy_timeout_ms: int = Field(default=5000, ge=0)
+
+
+class MediaSettings(BaseModel):
+    """Download policy for Telegram media."""
+
+    download_dir: Path | None = Field(default=None, description="Defaults to <data_dir>/media")
+    max_file_bytes: int = Field(default=100 * 1024 * 1024, ge=1024)
+    #: MIME prefixes that may be downloaded. Empty list means "anything".
+    allowed_mime_prefixes: list[str] = Field(
+        default_factory=lambda: [
+            "image/", "video/", "audio/", "text/",
+            "application/pdf", "application/json", "application/zip",
+            "application/vnd.openxmlformats", "application/msword",
+        ]
+    )
+    #: Extensions that are never written to disk regardless of MIME type.
+    blocked_extensions: list[str] = Field(
+        default_factory=lambda: [
+            ".exe", ".dll", ".scr", ".com", ".pif", ".bat", ".cmd", ".ps1",
+            ".vbs", ".js", ".jse", ".msi", ".msp", ".hta", ".cpl", ".lnk",
+            ".jar", ".apk", ".app", ".dmg", ".sh",
+        ]
+    )
+    retention_days: int = Field(default=7, ge=0, le=3650)
+
+
+class LoggingSettings(BaseModel):
+    """Structured logging configuration."""
+
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(default="INFO")
+    format: Literal["console", "json"] = Field(default="console")
+    file: Path | None = Field(default=None, description="Also write JSON lines here")
+    #: Log the arguments of Telegram calls. Off by default: arguments contain
+    #: message text, which is user data.
+    log_call_arguments: bool = Field(default=False)
+
+
+class SchedulerSettings(BaseModel):
+    """Background task scheduling."""
+
+    enabled: bool = Field(default=True)
+    tick_interval: float = Field(default=20.0, gt=0, le=3600)
+    #: A run more than this many seconds late is skipped rather than fired.
+    misfire_grace: float = Field(default=900.0, ge=0)
+    max_concurrent_tasks: int = Field(default=2, ge=1, le=32)
+    default_timezone: str = Field(default="UTC")
+
+
+class FeatureFlags(BaseModel):
+    """Coarse on/off switches for capability groups."""
+
+    code_execution: bool = Field(default=True)
+    media_download: bool = Field(default=True)
+    media_upload: bool = Field(default=False)
+    scheduling: bool = Field(default=True)
+    memory: bool = Field(default=True)
+    #: Scan untrusted content for prompt-injection patterns and annotate it.
+    injection_scanner: bool = Field(default=True)
+
+
+class Settings(BaseSettings):
+    """Root configuration object."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="TGAGENT_",
+        env_nested_delimiter="__",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        validate_default=True,
+    )
+
+    data_dir: Path = Field(default_factory=default_data_dir)
+
+    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+    agent: AgentSettings = Field(default_factory=AgentSettings)
+    permissions: PermissionSettings = Field(default_factory=PermissionSettings)
+    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    storage: StorageSettings = Field(default_factory=StorageSettings)
+    media: MediaSettings = Field(default_factory=MediaSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
+    features: FeatureFlags = Field(default_factory=FeatureFlags)
+
+    @model_validator(mode="after")
+    def _resolve_paths(self) -> Settings:
+        """Fill in every path that defaults to a location under ``data_dir``."""
+        self.data_dir = self.data_dir.expanduser().resolve()
+        if self.telegram.session_dir is None:
+            self.telegram.session_dir = self.data_dir / "sessions"
+        if self.storage.database_path is None:
+            self.storage.database_path = self.data_dir / "tgagent.db"
+        if self.media.download_dir is None:
+            self.media.download_dir = self.data_dir / "media"
+        self.telegram.session_dir = self.telegram.session_dir.expanduser().resolve()
+        self.storage.database_path = self.storage.database_path.expanduser().resolve()
+        self.media.download_dir = self.media.download_dir.expanduser().resolve()
+        return self
+
+    @property
+    def session_path(self) -> Path:
+        assert self.telegram.session_dir is not None  # set by _resolve_paths
+        return self.telegram.session_dir / f"{self.telegram.session_name}.session"
+
+    @property
+    def schema_cache_path(self) -> Path:
+        return self.data_dir / "cache" / "telethon-schema.json"
+
+    def ensure_directories(self) -> None:
+        """Create the runtime directories, tightening permissions on POSIX."""
+        assert self.telegram.session_dir and self.storage.database_path and self.media.download_dir
+        for path, private in (
+            (self.data_dir, True),
+            (self.telegram.session_dir, True),
+            (self.storage.database_path.parent, True),
+            (self.media.download_dir, False),
+            (self.schema_cache_path.parent, False),
+        ):
+            path.mkdir(parents=True, exist_ok=True)
+            if private and os.name != "nt":
+                path.chmod(0o700)
+
+    def require_telegram(self) -> None:
+        """Fail fast, with an actionable message, if credentials are absent."""
+        if not self.telegram.is_configured():
+            raise ConfigError(
+                "Telegram credentials are missing. Set TGAGENT_TELEGRAM__API_ID and "
+                "TGAGENT_TELEGRAM__API_HASH (get them from https://my.telegram.org/apps). "
+                "See docs/telegram-setup.md."
+            )
+
+
+def load_settings(**overrides: Any) -> Settings:
+    """Build :class:`Settings` from the environment, applying explicit overrides."""
+    return Settings(**overrides)
