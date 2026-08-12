@@ -15,7 +15,13 @@ from typing import Any
 
 import pytest
 
-from tests.fakes import FakeClientManager, FakeControlEvent, FakeEntity, FakeMessage
+from tests.fakes import (
+    FakeClientManager,
+    FakeControlEvent,
+    FakeEntity,
+    FakeMessage,
+    FakePeer,
+)
 from tgagent.agent.events import RunResult
 from tgagent.config.settings import Settings, TelegramControlSettings
 from tgagent.interfaces.telegram_control import (
@@ -209,7 +215,11 @@ class TestDispatch:
 
         assert len(runtime.prompts) == 1
         assert "what did I miss?" in runtime.prompts[0]
-        assert manager.client.sent == [{"entity": -100123, "message": "You missed three messages."}]
+        # Addressed by the event's peer, not its raw id — see
+        # test_the_reply_addresses_the_chat_by_resolvable_peer.
+        assert manager.client.sent == [
+            {"entity": FakePeer(-100123), "message": "You missed three messages."}
+        ]
 
     async def test_the_answer_replies_to_the_command(self, manager: FakeClientManager) -> None:
         bridge = make_bridge(manager)
@@ -218,6 +228,53 @@ class TestDispatch:
 
         sends = [args for name, args in manager.client.calls if name == "send_message"]
         assert sends[0]["reply_to"] == 4821
+
+    async def test_the_reply_addresses_the_chat_by_resolvable_peer(
+        self, manager: FakeClientManager
+    ) -> None:
+        """A bare chat id is not something Telethon can always address.
+
+        Turning a user id into an InputPeerUser needs an access_hash, which lives
+        only in the session's entity cache, so replying to `chat_id` raised
+        "Could not find the input entity for PeerUser(...)" for any chat the
+        session had not already fetched. It failed *intermittently*, because one
+        get_dialogs anywhere in the process warms that cache and hides it. The
+        triggering event knows its own peer, so that is what gets used.
+        """
+        manager.client.require_input_peer = True
+        runtime = StubRuntime(answer="here you go")
+        bridge = make_bridge(manager, runtime)
+
+        await bridge.handle_event(FakeControlEvent("agent go", chat_id=7383856385, out=True))
+        await settle()
+
+        assert [entry["message"] for entry in manager.client.sent] == ["here you go"]
+        sends = [args for name, args in manager.client.calls if name == "send_message"]
+        assert not isinstance(sends[0]["entity"], int)
+
+    async def test_the_typing_indicator_also_uses_the_peer(
+        self, manager: FakeClientManager
+    ) -> None:
+        bridge = make_bridge(manager)
+        await bridge.handle_event(FakeControlEvent("agent go", chat_id=7383856385, out=True))
+        await settle()
+
+        actions = [args for name, args in manager.client.calls if name == "action"]
+        assert actions and not isinstance(actions[0]["entity"], int)
+
+    async def test_a_chat_with_no_resolvable_peer_still_falls_back_to_the_id(
+        self, manager: FakeClientManager
+    ) -> None:
+        """An event that cannot produce a peer must not lose the reply entirely."""
+        event = FakeControlEvent("agent go", chat_id=-100123, out=True)
+        event.input_chat = None
+        event.get_input_chat = None  # type: ignore[assignment]
+
+        bridge = make_bridge(manager)
+        await bridge.handle_event(event)
+        await settle()
+
+        assert manager.client.sent == [{"entity": -100123, "message": "done"}]
 
     async def test_an_ordinary_message_is_ignored(self, manager: FakeClientManager) -> None:
         runtime = StubRuntime()

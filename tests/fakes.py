@@ -124,6 +124,9 @@ class FakeControlEvent:
         self.sender = sender or FakeEntity(sender_id, username="owner", first_name="Owner")
         self.chat = chat or FakeEntity(chat_id, title="Project X")
         self._reply = reply_to_message
+        #: Telethon exposes the chat as a resolvable peer here; a bare id is not
+        #: resolvable for an uncached user, so the bridge has to use this.
+        self.input_chat = FakePeer(chat_id)
 
         self.message = FakeMessage(
             message_id, text, sender_id=sender_id, out=out, chat_id=chat_id, date=date
@@ -136,6 +139,9 @@ class FakeControlEvent:
 
     async def get_sender(self) -> FakeEntity:
         return self.sender
+
+    async def get_input_chat(self) -> FakePeer:
+        return FakePeer(self.chat_id)
 
 
 class FakeDocument:
@@ -212,6 +218,10 @@ class FakeTelegramClient:
         #: Ids of messages this client sent, in order. The control bridge keys its
         #: "never read my own output" guard on them, so tests need to see them.
         self.sent_ids: list[int] = []
+        #: When True, a bare integer entity is refused the way Telethon refuses
+        #: one it has no access_hash for. Off by default: most tests address
+        #: chats by username, where an id is never involved.
+        self.require_input_peer = False
         self._next_sent_id = 900
 
     # lifecycle -------------------------------------------------------------
@@ -297,6 +307,7 @@ class FakeTelegramClient:
         self, entity: Any = None, message: str = "", **kwargs: Any
     ) -> FakeMessage:
         self._maybe_raise()
+        self._check_addressable(entity)
         self.calls.append(("send_message", {"entity": entity, "message": message, **kwargs}))
         self.sent.append({"entity": entity, "message": message})
         # Distinct ids matter to the control bridge, which remembers what it sent
@@ -350,6 +361,15 @@ class FakeTelegramClient:
                 },
             )()
         return type("Result", (), {"ok": True, "request": name})()
+
+    def _check_addressable(self, entity: Any) -> None:
+        """Refuse a bare id, as Telethon does for an entity it cannot resolve."""
+        if self.require_input_peer and isinstance(entity, int):
+            raise ValueError(
+                f"Could not find the input entity for PeerUser(user_id={entity}) "
+                f"(PeerUser). Please read https://docs.telethon.dev/en/stable/"
+                f"concepts/entities.html to find out more details."
+            )
 
     def _maybe_raise(self) -> None:
         if self.next_error is not None:

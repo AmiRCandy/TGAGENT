@@ -142,10 +142,26 @@ class CommandSource:
     reply_to_text: str = ""
     reply_to_sender: str = ""
 
+    #: The chat as a *resolvable* peer, taken from the triggering event.
+    #:
+    #: Load-bearing, not a convenience. Telethon cannot turn a bare user id into
+    #: an ``InputPeerUser`` on its own — that needs an ``access_hash``, which only
+    #: exists in its entity cache — so replying to ``chat_id`` fails with
+    #: "Could not find the input entity for PeerUser(...)" for any chat the
+    #: session has not already fetched. Worse, it fails *intermittently*: one
+    #: ``get_dialogs`` anywhere in the process warms the cache and hides it. The
+    #: event that carried the command always knows its own peer, so it is kept.
+    peer: Any = None
+
     @property
     def key(self) -> str:
         """Stable identifier for the chat, used for conversations and locks."""
         return str(self.chat_id)
+
+    @property
+    def destination(self) -> Any:
+        """What to hand Telethon when addressing this chat."""
+        return self.peer if self.peer is not None else self.chat_id
 
 
 def build_prompt(source: CommandSource, settings: TelegramControlSettings) -> str:
@@ -625,7 +641,7 @@ class TelegramControlBridge:
         reply_to = source.message_id if self._settings.reply_to_command else None
         for index, chunk in enumerate(_chunk(text, self._settings.max_reply_chars)):
             sent = await client.send_message(
-                source.chat_id,
+                source.destination,
                 chunk,
                 reply_to=reply_to if index == 0 else None,
                 link_preview=False,
@@ -647,7 +663,7 @@ class TelegramControlBridge:
         entered: Any = None
         if self._settings.typing_indicator and action is not None:
             try:
-                entered = action(source.chat_id, "typing")
+                entered = action(source.destination, "typing")
                 await entered.__aenter__()
             except asyncio.CancelledError:
                 raise
@@ -718,6 +734,7 @@ class TelegramControlBridge:
             reply_to_message_id=reply_id,
             reply_to_text=reply_text,
             reply_to_sender=reply_sender,
+            peer=await _input_peer(event),
         )
 
 
@@ -800,6 +817,29 @@ def _display_name(entity: Any) -> str:
         return str(title)
     parts = [getattr(entity, "first_name", "") or "", getattr(entity, "last_name", "") or ""]
     return " ".join(part for part in parts if part).strip()
+
+
+async def _input_peer(event: Any) -> Any:
+    """The event's chat as a peer Telethon can address, or ``None``.
+
+    Tried in order of cost: the cached ``input_chat`` property, then
+    ``get_input_chat()``, which may go to the network. ``None`` on failure leaves
+    :attr:`CommandSource.destination` falling back to the raw id — no worse than
+    before, and still correct for a chat the session has cached.
+    """
+    cached = getattr(event, "input_chat", None)
+    if cached is not None:
+        return cached
+    getter = getattr(event, "get_input_chat", None)
+    if getter is None:
+        return None
+    try:
+        return await getter()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the id fallback is still worth trying
+        log.debug("control.input_peer_unavailable", error=str(exc))
+        return None
 
 
 async def _reply_context(event: Any, message: Any) -> tuple[int | None, str, str]:
