@@ -97,10 +97,35 @@ _V1: Final = (
 # content, not a failure, so it gets its own column.
 _V2: Final = ("ALTER TABLE audit_log ADD COLUMN suspicion REAL NOT NULL DEFAULT 0",)
 
+# Standing instructions to answer a chat on the owner's behalf. One per chat,
+# enforced here rather than in code: two watches on the same chat would both fire
+# on the same message, and "which one won" is not a question worth having.
+_V3: Final = (
+    """
+    CREATE TABLE chat_watches (
+        id              TEXT PRIMARY KEY,
+        chat_id         INTEGER NOT NULL UNIQUE,
+        chat_title      TEXT NOT NULL DEFAULT '',
+        instruction     TEXT NOT NULL,
+        senders         TEXT NOT NULL DEFAULT '[]',
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        created_at      TEXT NOT NULL,
+        expires_at      TEXT,
+        max_replies     INTEGER NOT NULL DEFAULT 20,
+        reply_count     INTEGER NOT NULL DEFAULT 0,
+        last_reply_at   TEXT,
+        stopped_because TEXT,
+        metadata        TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    "CREATE INDEX idx_watches_enabled ON chat_watches(enabled)",
+)
+
 #: ``(version, description, statements)``, applied in ascending order.
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     (1, "initial schema", _V1),
     (2, "record content suspicion on audit entries", _V2),
+    (3, "chat watches for automatic replies", _V3),
 )
 
 SCHEMA_VERSION: Final[int] = max(m[0] for m in MIGRATIONS)

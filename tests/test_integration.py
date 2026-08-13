@@ -23,7 +23,7 @@ from tgagent.config.settings import Settings
 from tgagent.llm.providers.fake import FakeProvider, text_completion, tool_call_completion
 from tgagent.risk import PolicyDecision
 from tgagent.sandbox import create_sandbox
-from tgagent.security.permissions import PermissionEngine
+from tgagent.security.permissions import PermissionEngine, granted
 from tgagent.storage.sqlite import SQLiteStorage
 from tgagent.telegram.gateway import TelegramGateway
 from tgagent.telegram.history import HistoryReader
@@ -405,3 +405,104 @@ class TestSchedulingFlow:
         assert task.enabled
         assert task.next_run_at is not None
         assert "unread" in task.prompt
+
+    async def test_a_task_that_could_never_act_says_so_when_it_is_created(
+        self, settings: Settings, gateway: TelegramGateway, storage: SQLiteStorage
+    ) -> None:
+        """ "Put the time in my name every minute" is denied on every single run.
+
+        A scheduled run has nobody to confirm with, so anything above
+        ``reversible`` is refused — 1,440 times a day, into a log nobody reads.
+        The operator is still in the conversation at *setup*, so that is where the
+        refusal has to surface, with the policy line that would fix it.
+        """
+        provider = FakeProvider(
+            [
+                tool_call_completion(
+                    "schedule_create",
+                    {
+                        "name": "clock-name",
+                        "prompt": "Set my first name to the current time in HH:MM.",
+                        "kind": "interval",
+                        "expression": "60",
+                        "needs": ["account.UpdateProfile"],
+                    },
+                ),
+                text_completion("Set up, but the policy will refuse it."),
+            ]
+        )
+        runtime = _runtime(provider, settings, gateway, storage)
+        await runtime.run("put the time in my name every minute")
+
+        # The refusal reached the model, with the fix, before it answered.
+        last_turn = "".join(
+            str(part) for message in provider.requests[-1].messages for part in message.content
+        )
+        assert "will_fail_every_run" in last_turn
+        assert "account.UpdateProfile: allow" in last_turn
+        # And the task exists, because the operator may be about to permit it.
+        assert await storage.tasks.get_by_name("clock-name") is not None
+
+    async def test_a_granted_task_can_actually_act_when_it_fires(
+        self,
+        settings: Settings,
+        gateway: TelegramGateway,
+        storage: SQLiteStorage,
+        fake_client: FakeTelegramClient,
+    ) -> None:
+        """The other half of a grant: it has to reach the network at 04:00.
+
+        Compare ``TestWriteFlow.test_unattended_run_cannot_send``, which is this
+        run without the grant, and sends nothing.
+        """
+        provider = FakeProvider(
+            [
+                tool_call_completion(
+                    "telegram_send_message", {"peer": "@alex", "message": "it is 08:15"}
+                ),
+                text_completion("Posted the time."),
+            ]
+        )
+        runtime = _runtime(provider, settings, gateway, storage)
+
+        # Exactly what Application._run_scheduled_task wraps a task's run in.
+        with granted(["messages.SendMessage"], source="scheduled task 'clock'"):
+            result = await runtime.run("post the current time", interactive=False)
+
+        assert result.succeeded
+        assert fake_client.sent == [{"entity": "@alex", "message": "it is 08:15"}]
+
+    async def test_a_grant_reaches_code_the_model_writes_too(
+        self,
+        settings: Settings,
+        gateway: TelegramGateway,
+        storage: SQLiteStorage,
+        fake_client: FakeTelegramClient,
+    ) -> None:
+        """A grant has to cover the sandbox, or "write code to do it" stays blocked.
+
+        The sandbox holds no client: its calls are marshalled back to the host and
+        authorised there, inside the run — which is the reason the grant is scoped
+        to the run rather than handed to the tool.
+        """
+        provider = FakeProvider(
+            [
+                tool_call_completion(
+                    "python",
+                    {
+                        "code": "result = tg.send_message(entity='@alex', message='from code')",
+                        "purpose": "post the time from a program",
+                    },
+                ),
+                text_completion("Posted from code."),
+            ]
+        )
+        sandbox = create_sandbox(settings.sandbox)
+        runtime = _runtime(provider, settings, gateway, storage, sandbox=sandbox)
+        try:
+            with granted(["messages.SendMessage"], source="scheduled task 'clock'"):
+                await runtime.run("post the time using code", interactive=False)
+        finally:
+            await sandbox.close()
+
+        assert fake_client.sent == [{"entity": "@alex", "message": "from code"}]

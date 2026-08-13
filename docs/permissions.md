@@ -202,7 +202,43 @@ max_outbound_per_run: 3
 ```
 
 That is a deliberate, reviewable decision — which is the point of it living in a
-file rather than a flag.
+file rather than a flag. It also applies to *every* run, which is why there is a
+second, narrower mechanism.
+
+### Task grants
+
+A standing request arrives while you are there to authorise it — *"put the time in
+my name every minute"* — and its runs happen when you are not. A **grant** uses
+the first moment to authorise the second: `schedule_create` checks what the task
+will need against the policy as an unattended run would see it, asks you once, and
+records your answer on the task.
+
+```
+⚠️ Confirmation needed (account_security)
+Operation : account.UpdateProfile
+Target    : task/clock-name
+Details   : The scheduled task 'clock-name' (every 1m) needs
+            account.UpdateProfile, and its runs have nobody to confirm
+            with. Granting it lets that task — and only that task —
+            perform this operation unattended until you delete it.
+```
+
+What a grant is *not* allowed to do is the substance of it:
+
+| A grant… | Because |
+| --- | --- |
+| applies to one task's runs only, via a `ContextVar` | the engine is shared and runs overlap; a scheduled task's grant must be invisible to a chat run beside it |
+| lifts the policy *decision* and nothing else | `read_only_mode`, `max_outbound_per_run`, and the chat lists are about blast radius, not about this operation |
+| cannot lift an explicit `method_overrides: … deny` | a tier default is the absence of an opinion; a named rule is one you had |
+| cannot touch password, 2FA, sessions, log-out, username, or account deletion | nothing a standing job does should be able to lock you out or move your credentials — `policy.yaml` and a restart remain the only way, and that friction is the point |
+| is visible in `tgagent tasks list`, `schedule_list`, the task row, and the reason on every audit entry it permits | a permission you cannot see is one you cannot review |
+
+The escalation is gated by a human answering a prompt, and by the model being
+unable to write the grant itself: it names what the task needs, and the *tool*
+asks. Deleting the task deletes the grant.
+
+See [scheduling](scheduling.md#granting-a-task-what-it-needs-from-the-chat) for
+the same thing from the operator's side.
 
 ## How it is wired
 

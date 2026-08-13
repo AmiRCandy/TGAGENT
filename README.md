@@ -188,7 +188,7 @@ in [known limitations](docs/limitations.md).
 |---|---|
 | **Start here** | [Installation](docs/installation.md) · [Telegram setup](docs/telegram-setup.md) · [Authentication](docs/authentication.md) · [Usage](docs/usage.md) · [Telegram control](docs/telegram-control.md) |
 | **Configure** | [Configuration](docs/configuration.md) · [LLM providers](docs/llm-providers.md) · [Permissions](docs/permissions.md) |
-| **Understand** | [Architecture](docs/architecture.md) · [Agent runtime](docs/agent-runtime.md) · [Tool architecture](docs/tool-architecture.md) · [Telegram integration](docs/telegram-integration.md) · [Memory](docs/memory.md) · [Scheduling](docs/scheduling.md) |
+| **Understand** | [Architecture](docs/architecture.md) · [Agent runtime](docs/agent-runtime.md) · [Tool architecture](docs/tool-architecture.md) · [Telegram integration](docs/telegram-integration.md) · [Memory](docs/memory.md) · [Scheduling](docs/scheduling.md) · [Answering for you](docs/autoreply.md) |
 | **Security** | [Security model](docs/security.md) · [Threat model](docs/threat-model.md) · [Prompt injection](docs/prompt-injection.md) · [Sandboxing](docs/sandboxing.md) · [Privacy](docs/privacy.md) |
 | **Operate** | [Deployment](docs/deployment.md) · [Troubleshooting](docs/troubleshooting.md) · [Limitations](docs/limitations.md) |
 | **Develop** | [Development](docs/development.md) · [Testing](docs/testing.md) · [CI/CD](docs/ci-cd.md) · [Extending](docs/extending.md) · [Decisions](docs/decisions/) · [Contributing](CONTRIBUTING.md) |

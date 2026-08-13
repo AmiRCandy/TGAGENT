@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Any, Self
 
+from tgagent.agent.events import RunResult
 from tgagent.agent.runtime import AgentRuntime, RuntimeDependencies
 from tgagent.config.policy import resolve_permissions
 from tgagent.config.settings import Settings, load_settings
@@ -30,7 +31,7 @@ from tgagent.sandbox import create_sandbox
 from tgagent.sandbox.base import SandboxRunner
 from tgagent.scheduler.scheduler import Scheduler
 from tgagent.security.confirm import AutoDenyConfirmation, ConfirmationProvider
-from tgagent.security.permissions import PermissionEngine
+from tgagent.security.permissions import PermissionEngine, granted
 from tgagent.storage.models import ScheduledTask
 from tgagent.storage.sqlite import SQLiteStorage
 from tgagent.telegram.client import TelegramClientManager
@@ -217,8 +218,10 @@ class Application:
                 sandbox=self.sandbox,
                 memory=self.storage.memory,
                 tasks=self.storage.tasks,
+                watches=self.storage.watches,
                 conversations=self.storage.conversations,
                 permissions=self.permissions,
+                confirmations=self.confirmations,
                 account=self.account,
             ),
         )
@@ -271,19 +274,38 @@ class Application:
             if removed:
                 log.info("app.audit_pruned", removed=removed, retention_days=days)
 
-    async def _run_scheduled_task(self, task: ScheduledTask) -> str:
-        """Execute a scheduled task as an unattended agent run.
+    async def run_task(self, task: ScheduledTask, *, on_event: Any = None) -> RunResult:
+        """Execute *task* as an unattended agent run.
 
         ``interactive=False`` is the important part: no human can answer a
         confirmation, so the permission engine falls back to the configured
         non-interactive decision rather than blocking forever.
+
+        A task may also carry grants — operations its owner approved when the task
+        was created, recorded on the row. They are applied around *this run only*,
+        so a chat run happening at the same time is unaffected; see
+        :func:`~tgagent.security.permissions.granted`.
+
+        Public, and the only definition of what running a task means. ``tgagent
+        tasks run`` reaching for its own runtime is how a task comes to behave one
+        way when tested and another at 04:00 — which, with grants on the row, it
+        did: the same task worked on a schedule and was refused from the CLI.
         """
         runtime = self.build_runtime()
-        result = await runtime.run(
-            task.prompt,
-            conversation_id=task.metadata.get("conversation_id"),
-            interactive=False,
-        )
+        grants = [str(method) for method in (task.metadata.get("grants") or [])]
+        if grants:
+            log.info("app.task_grants", task=task.name, methods=grants)
+        with granted(grants, source=f"scheduled task {task.name!r}"):
+            return await runtime.run(
+                task.prompt,
+                conversation_id=task.metadata.get("conversation_id"),
+                interactive=False,
+                on_event=on_event,
+            )
+
+    async def _run_scheduled_task(self, task: ScheduledTask) -> str:
+        """The scheduler's callback: run the task, report its answer."""
+        result = await self.run_task(task)
         if result.errors:
             log.warning("app.scheduled_task_errors", task=task.name, errors=result.errors)
         return result.answer

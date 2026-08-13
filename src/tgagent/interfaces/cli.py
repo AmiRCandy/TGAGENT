@@ -27,6 +27,11 @@ from tgagent.agent.events import AgentEvent, EventKind
 from tgagent.app import Application
 from tgagent.config.settings import Settings, load_settings
 from tgagent.errors import TgAgentError
+from tgagent.interfaces.autoreply import (
+    STOPPED_BY_OPERATOR,
+    AutoReplyWatcher,
+    describe_watch,
+)
 from tgagent.interfaces.telegram_control import TelegramControlBridge
 from tgagent.risk import RiskTier
 from tgagent.security.confirm import (
@@ -51,8 +56,12 @@ app = typer.Typer(
 )
 tasks_app = typer.Typer(help="Manage scheduled tasks.", no_args_is_help=True)
 config_app = typer.Typer(help="Inspect configuration and policy.", no_args_is_help=True)
+autoreply_app = typer.Typer(
+    help="Inspect and stop chats being answered automatically.", no_args_is_help=True
+)
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(config_app, name="config")
+app.add_typer(autoreply_app, name="autoreply")
 
 _RISK_STYLE = {
     RiskTier.READ_ONLY: "green",
@@ -64,6 +73,18 @@ _RISK_STYLE = {
 
 
 # --------------------------------------------------------------- plumbing ----
+def _build_watcher(application: Application, settings: Settings) -> AutoReplyWatcher | None:
+    """The autoreply watcher, or ``None`` where the deployment has it switched off.
+
+    ``None`` rather than a disabled watcher so that the bridge's own checks are a
+    single ``is None``, and so a deployment that never turns this on carries none
+    of it at runtime.
+    """
+    if not settings.autoreply.enabled:
+        return None
+    return AutoReplyWatcher(application.storage.watches, settings.autoreply)
+
+
 def _run(coro: Any) -> Any:
     """Run a coroutine, turning project errors into clean CLI failures."""
     try:
@@ -382,6 +403,7 @@ def listen(
             audit=application.storage.audit,
             confirmation_timeout=settings.permissions.confirmation_timeout,
             log_arguments=settings.logging.log_call_arguments,
+            watcher=_build_watcher(application, settings),
         )
         application.use_confirmations(bridge.confirmations)
 
@@ -401,6 +423,14 @@ def listen(
                     + (
                         f", {', '.join(settings.control.allowed_senders)}"
                         if settings.control.allowed_senders
+                        else ""
+                    )
+                    + (
+                        "\n\n[yellow]Automatic replies are ON[/yellow] — ask me to answer "
+                        "someone and I will, as you.\n"
+                        f"[dim]{settings.control.trigger} watches · "
+                        f"{settings.control.trigger} unwatch[/dim]"
+                        if settings.autoreply.enabled
                         else ""
                     )
                     + "\nPress Ctrl-C to stop.",
@@ -442,6 +472,7 @@ def serve(
                 audit=application.storage.audit,
                 confirmation_timeout=settings.permissions.confirmation_timeout,
                 log_arguments=settings.logging.log_call_arguments,
+                watcher=_build_watcher(application, settings),
             )
             application.use_confirmations(bridge.confirmations)
 
@@ -468,6 +499,107 @@ def serve(
             console.print("[dim]Shutting down…[/dim]")
             if bridge is not None:
                 await bridge.stop()
+            await application.stop()
+
+    _run(main())
+
+
+# ------------------------------------------------------------- autoreply ----
+@autoreply_app.command("list")
+def autoreply_list(
+    all_watches: Annotated[
+        bool, typer.Option("--all", help="Include watches that have already stopped.")
+    ] = False,
+) -> None:
+    """Show which chats are being answered automatically.
+
+    Works whether or not a listener is running, and without Telegram: the watches
+    are rows in the database, so this is the answer to "is it still replying to
+    anyone?" even from a second terminal.
+    """
+
+    async def main() -> None:
+        settings = load_settings()
+        application = Application(settings)
+        try:
+            await application.start(connect_telegram=False)
+            watches = await application.storage.watches.list_all(enabled_only=not all_watches)
+            if not settings.autoreply.enabled:
+                console.print(
+                    "[yellow]Automatic replies are switched off[/yellow] "
+                    "(`TGAGENT_AUTOREPLY__ENABLED=true` turns them on).\n"
+                )
+            if not watches:
+                console.print("[dim]No chats are being answered automatically.[/dim]")
+                return
+
+            now = datetime.now(UTC)
+            table = Table(title="Answering automatically")
+            for column in ("Chat", "Replies", "Ends in", "Active", "Instruction"):
+                table.add_column(column)
+            for watch in watches:
+                info = describe_watch(watch, now=now)
+                left = info["minutes_left"]
+                table.add_row(
+                    info["chat"],
+                    f"{watch.reply_count}/{watch.max_replies}",
+                    f"{left} min" if left is not None else "-",
+                    "[green]yes[/green]"
+                    if info["active"]
+                    else f"[dim]no — {watch.stopped_because or 'stopped'}[/dim]",
+                    watch.instruction[:60] + ("…" if len(watch.instruction) > 60 else ""),
+                )
+            console.print(table)
+        finally:
+            await application.stop()
+
+    _run(main())
+
+
+@autoreply_app.command("stop")
+def autoreply_stop(
+    chat: Annotated[
+        str | None,
+        typer.Argument(help="Chat id to stop answering. Omit to stop every one of them."),
+    ] = None,
+) -> None:
+    """Stop answering — the kill switch, from the terminal.
+
+    Needs no model, no Telegram connection, and no running listener: a listener
+    reads each watch from the database as messages arrive, so disabling the row
+    stops it within a message.
+    """
+
+    async def main() -> None:
+        application = Application(load_settings())
+        try:
+            await application.start(connect_telegram=False)
+            repository = application.storage.watches
+            if chat is None:
+                stopped = await repository.disable_all(reason=STOPPED_BY_OPERATOR)
+                console.print(f"[green]Stopped[/green] {stopped} watch(es).")
+                return
+
+            try:
+                chat_id = int(chat)
+            except ValueError:
+                err_console.print(
+                    "[red]Give the numeric chat id[/red] — `tgagent autoreply list` shows it."
+                )
+                raise typer.Exit(2) from None
+
+            watch = await repository.for_chat(chat_id)
+            if watch is None:
+                console.print(f"[dim]Chat {chat_id} is not being answered automatically.[/dim]")
+                return
+            watch.enabled = False
+            watch.stopped_because = STOPPED_BY_OPERATOR
+            await repository.update(watch)
+            console.print(
+                f"[green]Stopped[/green] answering {watch.chat_title or chat_id} "
+                f"after {watch.reply_count} repl(ies)."
+            )
+        finally:
             await application.stop()
 
     _run(main())
@@ -581,12 +713,17 @@ def tasks_run(
                 err_console.print(f"[red]No task named {name!r}.[/red]")
                 raise typer.Exit(1)
 
-            console.print(f"[dim]Running {name} (unattended semantics)…[/dim]")
-            runtime = application.build_runtime()
-            result = await runtime.run(
-                task.prompt,
-                interactive=False,
-                on_event=_Renderer(verbose=verbose, stream=False),
+            grants = task.metadata.get("grants") or []
+            console.print(
+                f"[dim]Running {name} (unattended semantics"
+                + (f", granted {', '.join(str(g) for g in grants)}" if grants else "")
+                + ")…[/dim]"
+            )
+            # Through the application, not a runtime of our own: this has to be
+            # the same execution the scheduler performs, grants included, or
+            # testing a task here proves nothing about what it does at 04:00.
+            result = await application.run_task(
+                task, on_event=_Renderer(verbose=verbose, stream=False)
             )
             _print_result(result, streamed=False)
         finally:
@@ -850,9 +987,10 @@ def _print_tasks(tasks: list[ScheduledTask]) -> None:
         console.print("[dim]No scheduled tasks.[/dim]")
         return
     table = Table(title="Scheduled tasks")
-    for column in ("Name", "Schedule", "Enabled", "Next run", "Last status", "Runs"):
+    for column in ("Name", "Schedule", "Enabled", "Next run", "Last status", "Runs", "Granted"):
         table.add_column(column)
     for task in tasks:
+        grants = task.metadata.get("grants") or []
         table.add_row(
             task.name,
             describe_schedule(task),
@@ -860,6 +998,10 @@ def _print_tasks(tasks: list[ScheduledTask]) -> None:
             task.next_run_at.strftime("%Y-%m-%d %H:%M") if task.next_run_at else "-",
             task.last_status.value if task.last_status else "-",
             str(task.run_count),
+            # Anything here is an operation this task may perform unattended that
+            # the policy would otherwise refuse. It belongs in the same view as the
+            # task, not somewhere an operator has to think to look.
+            "[yellow]" + ", ".join(str(g) for g in grants) + "[/yellow]" if grants else "-",
         )
     console.print(table)
 

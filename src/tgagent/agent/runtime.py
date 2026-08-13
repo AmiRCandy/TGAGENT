@@ -78,8 +78,12 @@ class RuntimeDependencies:
     sandbox: Any = None
     memory: Any = None
     tasks: Any = None
+    watches: Any = None
     conversations: ConversationRepository | None = None
     permissions: Any = None
+    #: Only used by tools that must get the owner's decision *now* for work that
+    #: will run later; per-call authorisation stays inside the gateway.
+    confirmations: Any = None
     account: dict[str, Any] | None = None
 
 
@@ -185,6 +189,9 @@ class AgentRuntime:
             sandbox=self._deps.sandbox,
             memory=self._deps.memory,
             tasks=self._deps.tasks,
+            watches=self._deps.watches,
+            permissions=self._deps.permissions,
+            confirmations=self._deps.confirmations,
             cancelled=cancel,
         )
 

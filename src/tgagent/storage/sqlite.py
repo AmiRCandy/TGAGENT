@@ -24,6 +24,7 @@ from tgagent.observability.logging import get_logger
 from tgagent.storage.migrations import MIGRATIONS, SCHEMA_VERSION
 from tgagent.storage.models import (
     AuditEntry,
+    ChatWatch,
     Conversation,
     MemoryFact,
     MessageRole,
@@ -80,6 +81,7 @@ class SQLiteStorage:
         self.conversations = _ConversationRepo(self)
         self.memory = _MemoryRepo(self)
         self.tasks = _TaskRepo(self)
+        self.watches = _WatchRepo(self)
         self.audit = _AuditRepo(self)
 
     # ------------------------------------------------------------ lifecycle --
@@ -481,6 +483,122 @@ class _TaskRepo:
             last_error=row["last_error"],
             run_count=int(row["run_count"]),
             created_at=_require_dt(row["created_at"]),
+            metadata=_json_loads(row["metadata"]),
+        )
+
+
+# ------------------------------------------------------------------ watches --
+class _WatchRepo:
+    _COLUMNS = (
+        "id, chat_id, chat_title, instruction, senders, enabled, created_at, expires_at, "
+        "max_replies, reply_count, last_reply_at, stopped_because, metadata"
+    )
+
+    def __init__(self, store: SQLiteStorage) -> None:
+        self._s = store
+
+    async def create(self, watch: ChatWatch) -> ChatWatch:
+        # One watch per chat, so re-watching a chat replaces rather than stacks:
+        # the operator saying "reply to Alex, but shorter" means one instruction,
+        # not two racing to answer the same message.
+        await self._s.execute("DELETE FROM chat_watches WHERE chat_id = ?", (watch.chat_id,))
+        await self._s.execute(
+            # _COLUMNS is a class constant, never user input.
+            f"INSERT INTO chat_watches ({self._COLUMNS}) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            self._to_params(watch),
+        )
+        return watch
+
+    async def get(self, watch_id: str) -> ChatWatch | None:
+        row = await self._s.query_one("SELECT * FROM chat_watches WHERE id = ?", (watch_id,))
+        return self._row_to_watch(row) if row else None
+
+    async def for_chat(self, chat_id: int) -> ChatWatch | None:
+        row = await self._s.query_one(
+            "SELECT * FROM chat_watches WHERE chat_id = ? AND enabled = 1", (chat_id,)
+        )
+        return self._row_to_watch(row) if row else None
+
+    async def list_all(self, *, enabled_only: bool = False) -> list[ChatWatch]:
+        sql = "SELECT * FROM chat_watches"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY created_at DESC"
+        return [self._row_to_watch(r) for r in await self._s.query(sql)]
+
+    async def update(self, watch: ChatWatch) -> ChatWatch:
+        await self._s.execute(
+            "UPDATE chat_watches SET chat_id=?, chat_title=?, instruction=?, senders=?, "
+            "enabled=?, expires_at=?, max_replies=?, reply_count=?, last_reply_at=?, "
+            "stopped_because=?, metadata=? WHERE id=?",
+            (
+                watch.chat_id,
+                watch.chat_title,
+                watch.instruction,
+                json.dumps(watch.senders),
+                int(watch.enabled),
+                _iso(watch.expires_at),
+                watch.max_replies,
+                watch.reply_count,
+                _iso(watch.last_reply_at),
+                watch.stopped_because,
+                json.dumps(watch.metadata),
+                watch.id,
+            ),
+        )
+        return watch
+
+    async def delete(self, watch_id: str) -> bool:
+        return (
+            await self._s.execute_returning_rowcount(
+                "DELETE FROM chat_watches WHERE id = ?", (watch_id,)
+            )
+            > 0
+        )
+
+    async def disable_all(self, *, reason: str) -> int:
+        """The kill switch. Disables rather than deletes, so what ran is still
+        answerable after the fact."""
+        return await self._s.execute_returning_rowcount(
+            "UPDATE chat_watches SET enabled = 0, stopped_because = ? WHERE enabled = 1",
+            (reason,),
+        )
+
+    @staticmethod
+    def _to_params(watch: ChatWatch) -> tuple[Any, ...]:
+        return (
+            watch.id,
+            watch.chat_id,
+            watch.chat_title,
+            watch.instruction,
+            json.dumps(watch.senders),
+            int(watch.enabled),
+            _iso(watch.created_at),
+            _iso(watch.expires_at),
+            watch.max_replies,
+            watch.reply_count,
+            _iso(watch.last_reply_at),
+            watch.stopped_because,
+            json.dumps(watch.metadata),
+        )
+
+    @staticmethod
+    def _row_to_watch(row: aiosqlite.Row) -> ChatWatch:
+        senders = json.loads(row["senders"] or "[]")
+        return ChatWatch(
+            id=row["id"],
+            chat_id=int(row["chat_id"]),
+            chat_title=row["chat_title"],
+            instruction=row["instruction"],
+            senders=[int(s) for s in senders if isinstance(s, int | str)],
+            enabled=bool(row["enabled"]),
+            created_at=_require_dt(row["created_at"]),
+            expires_at=_parse_dt(row["expires_at"]),
+            max_replies=int(row["max_replies"]),
+            reply_count=int(row["reply_count"]),
+            last_reply_at=_parse_dt(row["last_reply_at"]),
+            stopped_because=row["stopped_because"],
             metadata=_json_loads(row["metadata"]),
         )
 

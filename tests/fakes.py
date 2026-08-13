@@ -270,9 +270,13 @@ class FakeTelegramClient:
         if peer in ("@missing", "missing"):
             raise ValueError("No user has that username")
         name = str(peer).lstrip("@")
+        numeric = name.lstrip("-").isdigit()
         return FakeEntity(
-            12345,
-            username=name if not str(peer).lstrip("-").isdigit() else None,
+            # A numeric reference resolves to itself. Telethon does the same, and
+            # a fake that mapped every peer to one id could not tell two chats
+            # apart — which is precisely what anything multi-peer needs to test.
+            int(name) if numeric else 12345,
+            username=None if numeric else name,
             first_name=name.title(),
         )
 

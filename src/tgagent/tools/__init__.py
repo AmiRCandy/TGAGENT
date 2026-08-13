@@ -37,6 +37,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
     see is a tool it will try, and a disabled capability advertised in the schema
     wastes tokens and invites confusion.
     """
+    from tgagent.tools.autoreply_tools import build_autoreply_tools
     from tgagent.tools.code_tool import PythonTool
     from tgagent.tools.docs_tool import ApiSearchTool
     from tgagent.tools.memory_tools import build_memory_tools
@@ -53,6 +54,11 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         registry.register_all(build_memory_tools())
     if settings.features.scheduling:
         registry.register_all(build_schedule_tools())
+    # Off by default, and omitted entirely when it is off: a model that can see
+    # autoreply_start will offer it, and being offered something the deployment
+    # has deliberately switched off is worse than not knowing it exists.
+    if settings.autoreply.enabled:
+        registry.register_all(build_autoreply_tools())
     if not settings.features.media_download:
         registry.unregister("telegram_download_media")
 

@@ -48,7 +48,56 @@ send, edit, forward, or delete unless you granted that explicitly. The system
 prompt tells the agent it is unattended, so it plans accordingly and reports what
 it could not do rather than failing repeatedly.
 
-If a task genuinely needs to send, grant it narrowly in the policy file:
+There are two ways to give a task more than that, and they are for different
+situations.
+
+### Granting a task what it needs, from the chat
+
+A standing request usually arrives while you are there to authorise it — *"put
+the time in my name every minute"* — so that is when you get asked:
+
+```
+you    agent put the time in my name every minute
+bot    ⚠️ Confirmation needed (account_security)
+       Operation : account.UpdateProfile
+       Target    : task/clock-name
+       Details   : The scheduled task 'clock-name' (every 1m) needs
+                   account.UpdateProfile, and its runs have nobody to
+                   confirm with. Granting it lets that task — and only
+                   that task — perform this operation unattended until
+                   you delete it.
+       Reply yes to allow or no to refuse.
+you    yes
+bot    Set up: "clock-name", every 60s. Granted account.UpdateProfile
+       to this task only. Delete the task to end it.
+```
+
+The agent works out what a task will need and names it in `schedule_create`'s
+`needs` argument; the tool checks each operation against the policy *as an
+unattended run will see it* and asks about the ones that would be refused. Your
+`yes` is recorded on the task row and applied only to that task's runs:
+
+```bash
+tgagent tasks list        # the Granted column shows exactly this
+```
+
+Four limits make a grant narrower than a policy change, and all four matter:
+
+| | |
+| --- | --- |
+| **Scoped to the task** | Applied around that task's runs only, through a `ContextVar`, so a chat-initiated run happening at the same time is unaffected. |
+| **Lifts the decision, nothing else** | `read_only_mode`, `max_outbound_per_run`, and the chat allow/denylists are about blast radius rather than about this operation, and a grant does not touch them. |
+| **Cannot lift what you forbade** | An explicit `method_overrides: X: deny` is a decision you made; a tier default is the absence of one. Only the latter can be granted. |
+| **Cannot reach the account itself** | Nothing that can lock you out or move your credentials — password, 2FA, sessions, log-out, username, account deletion — is grantable from a chat, whatever you answer. |
+
+The grant is visible in `tgagent tasks list`, in `schedule_list`, in the task
+row, and in the reason attached to every audit entry it permits.
+
+### Granting in the policy file
+
+For anything a chat grant will not do — the account-security operations above, a
+task that must send into exactly one chat, or a rule you want under version
+control — the policy file is still the mechanism:
 
 ```yaml
 method_overrides:
@@ -58,7 +107,23 @@ max_outbound_per_run: 3
 ```
 
 That is a deliberate, reviewable decision — which is why it lives in a file
-rather than a flag.
+rather than a flag. It applies to *every* run, which is exactly the difference
+from a task grant, and it needs a restart to take effect.
+
+### If you skip both
+
+The task is still created, and it tells you what will happen:
+
+```json
+{"created": "clock-name", "schedule": "every 1m",
+ "will_fail_every_run": [{"method": "account.UpdateProfile",
+   "risk": "account_security", "decision": "deny",
+   "policy_fix": "method_overrides:\n  account.UpdateProfile: allow"}]}
+```
+
+A task refused on every run is the worst outcome available here — 1,440 silent
+failures a day, into a log nobody reads — so it is reported at setup, while
+somebody is still there to read it.
 
 ## Schedule kinds
 

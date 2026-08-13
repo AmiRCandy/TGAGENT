@@ -172,6 +172,8 @@ Asking is allowed while a run is in progress — `ping` is answered before the
 | `agent ping` | is the bridge alive, and how fast — answered without the model |
 | `agent stop` | cancel the run in progress in this chat |
 | `agent reset` | start a fresh conversation for this chat |
+| `agent watches` | which chats are being answered for you — see [Answering for you](autoreply.md) |
+| `agent unwatch` | stop answering all of them, now, without the model |
 | `agent help` | the list above, in the chat |
 
 Everything else is an instruction. `alive` and `status` are accepted as synonyms

@@ -19,10 +19,12 @@ executes without a confirmation prompt.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -91,6 +93,50 @@ _ACCOUNT_SECURITY_METHODS = _table(
         "send_code_request",
         "qr_login",
         "get_me_password",
+    }
+)
+# fmt: on
+
+# fmt: off  (columnar table: packed is far more readable than one item per line)
+#: Operations that no confirmation can grant to an unattended task, whatever the
+#: owner answers. Everything here either ends the account, moves the credentials
+#: that *are* the account, or revokes the owner's own access — losses no standing
+#: job should be able to cause. Deliberate use is still possible by editing the
+#: policy file, which takes a terminal and a restart, and that friction is the
+#: point. See :func:`grantable`.
+_UNGRANTABLE_METHODS = _table(
+    {
+        "deleteaccount",
+        "updatepasswordsettings",
+        "getpassword",
+        "getpasswordsettings",
+        "checkpassword",
+        "confirmpasswordemail",
+        "resendpasswordemail",
+        "cancelpasswordemail",
+        "recoverpassword",
+        "requestpasswordrecovery",
+        "edit_2fa",
+        "get_me_password",
+        "resetauthorization",
+        "resetauthorizations",
+        "resetwebauthorization",
+        "resetwebauthorizations",
+        "changeauthorizationsettings",
+        "setauthorizationttl",
+        "acceptauthorization",
+        "exportauthorization",
+        "importauthorization",
+        "logout",
+        "log_out",
+        "sendcode",
+        "send_code_request",
+        "signin",
+        "sign_in",
+        "signup",
+        "sign_up",
+        "qr_login",
+        "updateusername",
     }
 )
 # fmt: on
@@ -416,6 +462,92 @@ class PolicyExplanation:
         return bool(self.matched_overrides)
 
 
+# ------------------------------------------------------------------ grants ---
+# A standing task runs with nobody attached, so everything above `reversible` is
+# refused — which makes "do this every morning" impossible for any task that acts
+# rather than reads. A *grant* is the narrow way out: the owner is asked once,
+# while they are still in the conversation, and their yes is recorded against
+# that one task and applied only to its runs.
+#
+# Three limits keep it narrow, and all three matter:
+#
+# * It is scoped to a run, through a ContextVar, so a grant on a scheduled task
+#   cannot leak into a chat run happening at the same time.
+# * It lifts the *decision* only. read_only_mode, the per-run outbound ceiling,
+#   and the chat allow/denylists are operator settings about blast radius rather
+#   than about this operation, and a grant does not touch them.
+# * It cannot lift what the operator explicitly forbade (see :func:`grantable`).
+
+
+@dataclass(slots=True, frozen=True)
+class RunGrants:
+    """Operations one run may perform despite having nobody to confirm with."""
+
+    methods: frozenset[str] = frozenset()
+    #: Where the grant came from, for the audit trail: "scheduled task 'x'".
+    source: str = ""
+
+    def covers(self, method: str) -> bool:
+        _, key = canonical_method_key(method)
+        return key in self.methods
+
+
+_NO_GRANTS = RunGrants()
+
+_run_grants: ContextVar[RunGrants] = ContextVar("tgagent_run_grants", default=_NO_GRANTS)
+
+
+@contextlib.contextmanager
+def granted(methods: Iterable[str], *, source: str = "") -> Iterator[None]:
+    """Apply task-scoped grants for the duration of one run.
+
+    A context manager over a :class:`~contextvars.ContextVar` rather than state on
+    the engine, because the engine is shared and runs are concurrent: a scheduled
+    task's grant must be invisible to a chat run executing beside it. Each
+    ``asyncio`` task gets its own copy of the context, so the scope is exactly the
+    run that entered it, including any code the sandbox executes inside it.
+    """
+    keys = frozenset(canonical_method_key(m)[1] for m in methods if str(m).strip())
+    token = _run_grants.set(RunGrants(methods=keys, source=source))
+    try:
+        yield
+    finally:
+        _run_grants.reset(token)
+
+
+def active_grants() -> RunGrants:
+    """The grants in force for the current run. Empty outside a granted scope."""
+    return _run_grants.get()
+
+
+def grantable(method: str, explanation: PolicyExplanation) -> str | None:
+    """Why *method* may not be granted by a confirmation, or ``None`` if it may.
+
+    Two things are out of reach of a chat "yes", and for different reasons:
+
+    * Anything that can lock the owner out of the account or move its
+      credentials. No convenience is worth a scheduled job that can reset
+      sessions, change the password, or delete the account — and the operator can
+      still permit it deliberately by editing the policy file at a terminal.
+    * Anything the policy *names* and denies. A tier default is the absence of an
+      opinion about this operation; an explicit ``method_overrides`` entry is the
+      operator having had one, and a grant must not overrule it.
+    """
+    _, key = canonical_method_key(method)
+    if key in _UNGRANTABLE_METHODS:
+        return (
+            f"{method} can lock you out of the account or move its credentials, so it "
+            f"cannot be granted from a chat. Edit policy.yaml directly if you really "
+            f"mean it."
+        )
+    if explanation.from_override and explanation.decision is PolicyDecision.DENY:
+        return (
+            f"policy.yaml denies {method} by name ({', '.join(explanation.matched_overrides)}), "
+            f"and a grant does not overrule a rule you wrote deliberately."
+        )
+    return None
+
+
 @dataclass(slots=True, frozen=True)
 class AuthorizationResult:
     """The engine's verdict, plus why."""
@@ -623,6 +755,19 @@ class PermissionEngine:
             return AuthorizationResult(PolicyDecision.DENY, risk, chat_reason)
 
         decision = self._lookup_decision(request.method, risk)
+
+        # A grant applies only after the blast-radius checks above: the owner
+        # approved *this operation*, not read-only mode, the outbound ceiling, or
+        # the chat lists. It is checked before the non-interactive fallback,
+        # because being unattended is precisely the situation it exists for.
+        grants = active_grants()
+        if decision is not PolicyDecision.ALLOW and grants.covers(request.method):
+            return AuthorizationResult(
+                PolicyDecision.ALLOW,
+                risk,
+                f"Allowed by a grant you confirmed for {grants.source or 'this task'} "
+                f"({risk.value} would otherwise be {decision.value}).",
+            )
 
         if decision is PolicyDecision.CONFIRM and not interactive:
             fallback = s.non_interactive_decision

@@ -6,9 +6,11 @@ from tgagent.storage.base import (
     MemoryRepository,
     Storage,
     TaskRepository,
+    WatchRepository,
 )
 from tgagent.storage.models import (
     AuditEntry,
+    ChatWatch,
     Conversation,
     MemoryFact,
     MessageRole,
@@ -22,6 +24,7 @@ from tgagent.storage.sqlite import SQLiteStorage
 __all__ = [
     "AuditEntry",
     "AuditRepository",
+    "ChatWatch",
     "Conversation",
     "ConversationRepository",
     "MemoryFact",
@@ -34,4 +37,5 @@ __all__ = [
     "StoredMessage",
     "TaskRepository",
     "TaskStatus",
+    "WatchRepository",
 ]

@@ -27,7 +27,9 @@ from tgagent.risk import RiskTier, TrustLevel
 if TYPE_CHECKING:  # pragma: no cover
     from tgagent.config.settings import Settings
     from tgagent.sandbox.base import SandboxRunner
-    from tgagent.storage.base import MemoryRepository, TaskRepository
+    from tgagent.security.confirm import ConfirmationProvider
+    from tgagent.security.permissions import PermissionEngine
+    from tgagent.storage.base import MemoryRepository, TaskRepository, WatchRepository
     from tgagent.telegram.gateway import TelegramGateway
     from tgagent.telegram.history import HistoryReader
     from tgagent.telegram.media import MediaManager
@@ -55,6 +57,16 @@ class ToolContext:
     sandbox: SandboxRunner | None = None
     memory: MemoryRepository | None = None
     tasks: TaskRepository | None = None
+    watches: WatchRepository | None = None
+    #: The policy engine, for tools that need to *ask what would happen* rather
+    #: than do something — chiefly so work being set up for later can say now
+    #: whether it will be permitted then. It authorises nothing here; the gateway
+    #: remains the only place a decision is enforced.
+    permissions: PermissionEngine | None = None
+    #: Who to ask when a tool needs the owner's decision rather than the
+    #: gateway's. Only one thing needs this: work being scheduled for later has to
+    #: be authorised now, while somebody is still here to authorise it.
+    confirmations: ConfirmationProvider | None = None
 
     #: Set when the user cancels; long-running tools should check it.
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)

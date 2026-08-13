@@ -12,6 +12,7 @@ from typing import Protocol, runtime_checkable
 
 from tgagent.storage.models import (
     AuditEntry,
+    ChatWatch,
     Conversation,
     MemoryFact,
     ScheduledTask,
@@ -91,6 +92,35 @@ class TaskRepository(Protocol):
 
 
 @runtime_checkable
+class WatchRepository(Protocol):
+    """Standing instructions to answer a chat automatically."""
+
+    async def create(self, watch: ChatWatch) -> ChatWatch:
+        """Insert, replacing any existing watch on the same chat."""
+        ...
+
+    async def get(self, watch_id: str) -> ChatWatch | None: ...
+
+    async def for_chat(self, chat_id: int) -> ChatWatch | None:
+        """The enabled watch on *chat_id*, if there is one.
+
+        On the hot path: the bridge asks this for every message that is not a
+        command, so it is a single indexed lookup by design.
+        """
+        ...
+
+    async def list_all(self, *, enabled_only: bool = False) -> list[ChatWatch]: ...
+
+    async def update(self, watch: ChatWatch) -> ChatWatch: ...
+
+    async def delete(self, watch_id: str) -> bool: ...
+
+    async def disable_all(self, *, reason: str) -> int:
+        """Stop every watch at once. Returns how many were stopped."""
+        ...
+
+
+@runtime_checkable
 class AuditRepository(Protocol):
     """The security audit trail."""
 
@@ -110,6 +140,7 @@ class Storage(Protocol):
     conversations: ConversationRepository
     memory: MemoryRepository
     tasks: TaskRepository
+    watches: WatchRepository
     audit: AuditRepository
 
     async def connect(self) -> None: ...

@@ -115,6 +115,51 @@ class ScheduledTask:
 
 
 @dataclass(slots=True)
+class ChatWatch:
+    """A standing instruction to answer one chat on the owner's behalf.
+
+    Like :class:`ScheduledTask`, it is *data*: a chat, an instruction, and the
+    limits that bound it. What fires it is not a clock but somebody else's
+    message, which is why every field below except the instruction exists to say
+    *when to stop* — a watch that outlives the reason it was created is the
+    failure mode worth designing against.
+    """
+
+    id: str = field(default_factory=_new_id)
+    #: Telegram's *marked* chat id, as events report it: negative for groups and
+    #: channels, positive for a private chat. Matching depends on this being the
+    #: same form the bridge sees.
+    chat_id: int = 0
+    chat_title: str = ""
+    #: The operator's standing instruction, in their words.
+    instruction: str = ""
+    #: User ids whose messages trigger it. Empty means anyone but the owner,
+    #: which is the whole chat in a private conversation.
+    senders: list[int] = field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime = field(default_factory=_now)
+    #: When it stops on its own. Never ``None`` in practice — the tool applies a
+    #: default — but nullable so a deliberate forever-watch is expressible.
+    expires_at: datetime | None = None
+    max_replies: int = 20
+    reply_count: int = 0
+    last_reply_at: datetime | None = None
+    #: Why it is no longer enabled, for the operator asking "what happened?".
+    stopped_because: str | None = None
+    #: Conversation the replies continue, plus provenance.
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def expired(self, now: datetime) -> bool:
+        return self.expires_at is not None and now >= self.expires_at
+
+    def exhausted(self) -> bool:
+        return self.reply_count >= self.max_replies
+
+    def matches_sender(self, sender_id: int | None) -> bool:
+        return not self.senders or (sender_id is not None and sender_id in self.senders)
+
+
+@dataclass(slots=True)
 class AuditEntry:
     """One security-relevant event.
 

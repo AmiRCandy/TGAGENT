@@ -180,6 +180,24 @@ The security reasoning behind these defaults is in
 | `control.conversation_scope` | `chat` | `chat` \| `global` |
 | `control.max_commands_per_minute` | `6` | Loop breaker, not a UX limit |
 
+### `autoreply`
+
+Answering other people's messages as you. Off by default; read
+[Answering for you](autoreply.md) before enabling it — it is the only path where
+the account speaks to somebody else without a per-message confirmation.
+
+| Setting | Default | Notes |
+|---|---|---|
+| `autoreply.enabled` | `false` | Also decides whether the tools exist at all |
+| `autoreply.max_watches` | `5` | Chats answered at once |
+| `autoreply.default_ttl_minutes` | `240` | Every watch expires; this is the default |
+| `autoreply.max_ttl_minutes` | `10080` | Ceiling on any requested lifetime |
+| `autoreply.max_replies_per_watch` | `20` | Budget for one watch |
+| `autoreply.max_replies_per_hour` | `30` | Loop breaker across all watches |
+| `autoreply.cooldown_seconds` | `5.0` | Also collapses a burst into one answer |
+| `autoreply.prefix` | `""` | Marks replies as automatic, if you want that |
+| `autoreply.typing_indicator` | `true` | Show "typing…" while writing |
+
 ### `features`
 
 Coarse switches. A disabled capability is **removed from the tool list** rather

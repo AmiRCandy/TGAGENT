@@ -76,6 +76,12 @@ from typing import Any
 from tgagent.agent.events import AgentEvent, EventKind, RunResult
 from tgagent.agent.runtime import AgentRuntime
 from tgagent.config.settings import TelegramControlSettings
+from tgagent.interfaces.autoreply import (
+    STOPPED_BY_OPERATOR,
+    AutoReplyWatcher,
+    IncomingMessage,
+    describe_watch,
+)
 from tgagent.observability.logging import get_logger
 from tgagent.risk import RiskTier
 from tgagent.security.confirm import (
@@ -85,7 +91,7 @@ from tgagent.security.confirm import (
 )
 from tgagent.security.trust import UntrustedContent, wrap_untrusted
 from tgagent.storage.base import AuditRepository
-from tgagent.storage.models import AuditEntry
+from tgagent.storage.models import AuditEntry, ChatWatch
 
 log = get_logger(__name__)
 
@@ -99,6 +105,13 @@ _RESET_WORDS = frozenset({"reset", "new", "forget", "clear"})
 _HELP_WORDS = frozenset({"help", "?", "usage"})
 #: A liveness check, answered by the bridge without going near the model.
 _PING_WORDS = frozenset({"ping", "alive", "status"})
+#: Automatic replies: what is running, and the kill switch. Both are answered
+#: here rather than by the model, because the day you most want to stop the
+#: account answering for you is the day the model is what went wrong.
+_WATCH_WORDS = frozenset({"watches", "watching", "autoreply"})
+_UNWATCH_WORDS = frozenset(
+    {"unwatch", "autoreply off", "stop replying", "stop autoreply", "stop answering"}
+)
 
 #: Frames for the status message, so consecutive edits differ visibly.
 _PULSE = ("⏳", "⌛")
@@ -112,9 +125,16 @@ _HELP_TEXT = (
     "`{trigger} ping` — check the bridge is alive, and how fast\n"
     "`{trigger} stop` — cancel the run in progress here\n"
     "`{trigger} reset` — start a fresh conversation for this chat\n"
-    "`{trigger} help` — this message\n\n"
-    "Reply to a message and the replied-to text is included as context."
+    "`{trigger} help` — this message\n"
 )
+
+#: Appended to the help only where automatic replies are switched on.
+_HELP_AUTOREPLY = (
+    "`{trigger} watches` — which chats are being answered for you\n"
+    "`{trigger} unwatch` — stop answering all of them, now\n"
+)
+
+_HELP_FOOTER = "\nReply to a message and the replied-to text is included as context."
 
 
 # ----------------------------------------------------------------- parsing ----
@@ -320,7 +340,7 @@ class _Progress:
         if self.tool_calls:
             facts.append(f"{self.tool_calls} tool call{'' if self.tool_calls == 1 else 's'}")
         tail = " · ".join(facts)
-        head = f"{_PULSE[self.ticks % len(_PULSE)]} {self.note}… _{_duration(self.elapsed)}_"
+        head = f"{_PULSE[self.ticks % len(_PULSE)]} {self.note}… {_duration(self.elapsed)}"
         if self.tool:
             return head + f"\n→ `{self.tool}`" + (f" · {tail}" if tail else "")
         return head + (f" · {tail}" if tail else "")
@@ -480,6 +500,7 @@ class TelegramControlBridge:
         audit: AuditRepository | None = None,
         confirmation_timeout: float = 300.0,
         log_arguments: bool = False,
+        watcher: AutoReplyWatcher | None = None,
     ) -> None:
         self._manager = manager
         self._runtime_factory = runtime_factory
@@ -487,6 +508,9 @@ class TelegramControlBridge:
         self._me_id = me_id
         self._audit = audit
         self._log_arguments = log_arguments
+        #: Answers other people's messages under a standing instruction. Absent
+        #: unless the deployment turned it on; see :mod:`tgagent.interfaces.autoreply`.
+        self._watcher = watcher
 
         self.confirmations = ChatConfirmation(self, timeout=confirmation_timeout)
 
@@ -511,6 +535,9 @@ class TelegramControlBridge:
         client = self._manager.client
         if self._me_id is None:
             self._me_id = getattr(self._manager.me, "id", None)
+        if self._watcher is not None and self._watcher.me_id is None:
+            # Only knowable now: the account is not identified until it connects.
+            self._watcher.me_id = self._me_id
 
         self._handler = self._on_new_message
         client.add_event_handler(self._handler, events.NewMessage())
@@ -519,6 +546,7 @@ class TelegramControlBridge:
             trigger=self._settings.trigger,
             respond_to_self=self._settings.respond_to_self,
             allowed_senders=len(self._settings.allowed_senders),
+            autoreply=bool(self._watcher and self._watcher.enabled),
         )
 
     async def stop(self) -> None:
@@ -584,7 +612,10 @@ class TelegramControlBridge:
 
         instruction = parse_command(text, self._settings.trigger)
         if instruction is None:
-            return False
+            # Not a command — but it may be a message this account has been asked
+            # to answer on the owner's behalf. Nothing in it is ever treated as an
+            # instruction; see :mod:`tgagent.interfaces.autoreply`.
+            return await self._maybe_autoreply(event, chat_id, message_id, text)
 
         source = await self._describe(event, chat_id, message_id, instruction)
         refusal = await self._authorise(source, event)
@@ -609,6 +640,16 @@ class TelegramControlBridge:
             await self._pong(source)
             return True
 
+        # Same reasoning as ping, and more so: the kill switch for "the account is
+        # answering people for me" must not depend on a model being reachable.
+        if word in _WATCH_WORDS:
+            await self._reply(source, await self._render_watches())
+            return True
+
+        if word in _UNWATCH_WORDS:
+            await self._reply(source, await self._stop_watches())
+            return True
+
         if word in _STOP_WORDS:
             run = self._active.get(source.key)
             if run is None:
@@ -624,7 +665,10 @@ class TelegramControlBridge:
             return True
 
         if word in _HELP_WORDS:
-            await self._reply(source, _HELP_TEXT.format(trigger=self._settings.trigger))
+            body = _HELP_TEXT
+            if self._watcher is not None and self._watcher.enabled:
+                body += _HELP_AUTOREPLY
+            await self._reply(source, (body + _HELP_FOOTER).format(trigger=self._settings.trigger))
             return True
 
         if source.key in self._active:
@@ -727,6 +771,189 @@ class TelegramControlBridge:
             tool_calls=result.tool_calls,
             stopped_because=result.stopped_because,
         )
+
+    # --------------------------------------------------------- autoreply ------
+    async def _maybe_autoreply(self, event: Any, chat_id: int, message_id: int, text: str) -> bool:
+        """Answer an arriving message if a watch says to. Returns True if a run started.
+
+        On the hot path — every message in every chat reaches here — so the cheap
+        local checks come first and the database is only asked about chats that
+        got past them.
+        """
+        watcher = self._watcher
+        if watcher is None or not watcher.enabled:
+            return False
+        # The owner's own messages are commands, and the bridge's own replies are
+        # outgoing too: answering either is how a machine talks to itself forever.
+        if _is_outgoing(event):
+            return False
+
+        incoming = IncomingMessage(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            sender_id=_sender_id_of(event),
+            sender_name=_display_name(getattr(event, "sender", None)),
+            chat_title=_chat_title(event, getattr(event, "chat", None)),
+            chat_kind=_chat_kind(event),
+            date=getattr(getattr(event, "message", None), "date", None),
+        )
+        watch = await watcher.match(incoming)
+        if watch is None:
+            return False
+
+        if (refusal := watcher.refuse(watch)) is not None:
+            # Transient: a burst of messages, or the hourly ceiling. The next
+            # message is considered again, and a run already in flight will see
+            # this one in the history anyway.
+            log.info("autoreply.deferred", chat=chat_id, watch=watch.id, reason=refusal)
+            return False
+
+        source = CommandSource(
+            chat_id=chat_id,
+            message_id=message_id,
+            instruction=watch.instruction,
+            chat_title=incoming.chat_title,
+            chat_kind=incoming.chat_kind,
+            sender_id=incoming.sender_id,
+            sender_name=incoming.sender_name,
+            date=incoming.date,
+            peer=await _input_peer(event),
+        )
+        if source.key in self._active:
+            log.info("autoreply.busy", chat=chat_id, watch=watch.id)
+            return False
+
+        cancel = asyncio.Event()
+        task = asyncio.create_task(
+            self._run_autoreply(source, watch, incoming, cancel), name=f"autoreply-{chat_id}"
+        )
+        # The same slot commands use, so one chat runs one thing at a time and
+        # `agent stop` cancels an automatic reply exactly like anything else.
+        self._active[source.key] = _ActiveRun(task=task, cancel=cancel)
+        return True
+
+    async def _run_autoreply(
+        self,
+        source: CommandSource,
+        watch: ChatWatch,
+        incoming: IncomingMessage,
+        cancel: asyncio.Event,
+    ) -> None:
+        """Write and send one reply, or nothing at all.
+
+        Nothing about this run is ever narrated into the chat: no status message,
+        no error, no "cancelled". The person on the other end is not the operator,
+        and showing them the machinery would be both a leak and a lie about who
+        they are talking to. Failures go to the log and the audit trail.
+        """
+        watcher = self._watcher
+        if watcher is None:  # pragma: no cover - only reachable if stopped mid-flight
+            return
+        try:
+            async with self._semaphore:
+                if cancel.is_set():
+                    return
+                runtime: AgentRuntime = self._runtime_factory()
+                conversation_id = str(
+                    watch.metadata.get("conversation_id") or f"tg-autoreply-{source.chat_id}"
+                )
+                log.info(
+                    "autoreply.run_started",
+                    chat=source.chat_id,
+                    watch=watch.id,
+                    conversation=conversation_id,
+                )
+                async with self._typing(source, enabled=watcher.settings.typing_indicator):
+                    result: RunResult = await runtime.run(
+                        watcher.build_prompt(watch, incoming),
+                        conversation_id=conversation_id,
+                        # Nobody to ask: a confirmation here would be asked of the
+                        # person being replied to. CONFIRM therefore falls to
+                        # permissions.non_interactive_decision, which is deny.
+                        interactive=False,
+                        cancel=cancel,
+                    )
+
+                reply = watcher.render_reply(result.answer, limit=self._settings.max_reply_chars)
+                if reply is None:
+                    log.info(
+                        "autoreply.said_nothing",
+                        chat=source.chat_id,
+                        watch=watch.id,
+                        stopped_because=result.stopped_because,
+                    )
+                    await self._record_autoreply(source, watch, decision="skip", error=None)
+                    return
+
+                # In a group a reply belongs in thread; in a private chat nobody
+                # quotes the message they are answering.
+                reply_to = source.message_id if source.chat_kind != "private chat" else None
+                await self._send(source, reply, reply_to=reply_to)
+                await watcher.record_reply(watch)
+                await self._record_autoreply(source, watch, decision="allow", error=None)
+                log.info(
+                    "autoreply.replied",
+                    chat=source.chat_id,
+                    watch=watch.id,
+                    replies=watch.reply_count,
+                    remaining=max(0, watch.max_replies - watch.reply_count),
+                    chars=len(reply),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error(
+                "autoreply.failed",
+                chat=source.chat_id,
+                watch=watch.id,
+                error=str(exc),
+                exc_info=True,
+            )
+            with contextlib.suppress(Exception):
+                await self._record_autoreply(source, watch, decision="error", error=str(exc))
+        finally:
+            self._active.pop(source.key, None)
+
+    async def _render_watches(self) -> str:
+        """The answer to ``agent watches``."""
+        watcher = self._watcher
+        if watcher is None or not watcher.enabled or watcher.repository is None:
+            return (
+                "Automatic replies are switched off. To use them, set "
+                "`TGAGENT_AUTOREPLY__ENABLED=true` and restart the listener — then ask "
+                "me to reply to someone for you."
+            )
+        watches = await watcher.repository.list_all(enabled_only=True)
+        if not watches:
+            return "I am not answering any chats for you."
+
+        now = datetime.now(UTC)
+        lines = ["**Answering for you**"]
+        for watch in watches:
+            info = describe_watch(watch, now=now)
+            left = (
+                f"{info['minutes_left']} min left"
+                if info["minutes_left"] is not None
+                else "no expiry"
+            )
+            lines.append(
+                f"· **{info['chat']}** — {info['replies_sent']}/{watch.max_replies} replies, {left}"
+            )
+            lines.append(f"  “{watch.instruction[:200]}”")
+        lines.append(f"\nSend `{self._settings.trigger} unwatch` to stop all of them.")
+        return "\n".join(lines)
+
+    async def _stop_watches(self) -> str:
+        """The answer to ``agent unwatch`` — the kill switch."""
+        watcher = self._watcher
+        if watcher is None or watcher.repository is None:
+            return "Automatic replies are switched off, so nothing was running."
+        stopped = await watcher.repository.disable_all(reason=STOPPED_BY_OPERATOR)
+        log.info("autoreply.stopped_all", stopped=stopped)
+        if not stopped:
+            return "I was not answering any chats for you."
+        return f"Stopped answering {stopped} chat{'' if stopped == 1 else 's'}."
 
     def _on_agent_event(self, event: AgentEvent, status: _StatusMessage) -> None:
         # Events fold into the status message, which is rewritten on a timer —
@@ -966,7 +1193,9 @@ class TelegramControlBridge:
             return False
 
     @contextlib.asynccontextmanager
-    async def _typing(self, source: CommandSource) -> AsyncIterator[None]:
+    async def _typing(
+        self, source: CommandSource, *, enabled: bool | None = None
+    ) -> AsyncIterator[None]:
         """Show "typing…" for the duration of a run, if the client supports it.
 
         The indicator is cosmetic, so a client that cannot show one, or fails
@@ -977,7 +1206,8 @@ class TelegramControlBridge:
         """
         action = getattr(self._manager.client, "action", None)
         entered: Any = None
-        if self._settings.typing_indicator and action is not None:
+        wanted = self._settings.typing_indicator if enabled is None else enabled
+        if wanted and action is not None:
             try:
                 entered = action(source.destination, "typing")
                 await entered.__aenter__()
@@ -1009,6 +1239,39 @@ class TelegramControlBridge:
             error=error,
             origin="control",
         )
+        await self._write_audit(entry)
+
+    async def _record_autoreply(
+        self, source: CommandSource, watch: ChatWatch, *, decision: str, error: str | None
+    ) -> None:
+        """Audit one automatic reply.
+
+        Recorded at ``externally_visible`` whatever the outcome, and with its own
+        origin, because this is the one path where the account speaks to somebody
+        else without a per-message confirmation: "what did it say, to whom, under
+        which instruction" has to be answerable afterwards.
+        """
+        if self._audit is None:
+            return
+        await self._write_audit(
+            AuditEntry(
+                run_id=f"autoreply:{watch.id[:8]}",
+                conversation_id=str(watch.metadata.get("conversation_id") or ""),
+                method="autoreply.reply",
+                risk=RiskTier.EXTERNALLY_VISIBLE.value,
+                decision=decision,
+                target=f"chat/{source.chat_id}",
+                argument_digest=hashlib.sha256(watch.instruction.encode()).hexdigest()[:16],
+                argument_preview=watch.instruction[:500] if self._log_arguments else None,
+                succeeded=decision == "allow",
+                error=error,
+                origin="autoreply",
+            )
+        )
+
+    async def _write_audit(self, entry: AuditEntry) -> None:
+        if self._audit is None:
+            return
         try:
             await self._audit.record(entry)
         except Exception as exc:  # noqa: BLE001 - auditing must not break listening
@@ -1060,9 +1323,11 @@ def _format_answer(result: RunResult) -> str:
     if result.cancelled:
         return "Cancelled."
     if result.stopped_because:
-        answer += f"\n\n_stopped: {result.stopped_because}_"
+        # Telethon's markdown italicises on __double__ underscores; a single one
+        # is left in the message as a literal character.
+        answer += f"\n\n__stopped: {result.stopped_because}__"
     if result.errors:
-        answer += "\n" + "\n".join(f"_! {message}_" for message in result.errors[:3])
+        answer += "\n" + "\n".join(f"__! {message}__" for message in result.errors[:3])
     return answer
 
 
@@ -1124,6 +1389,18 @@ def _chat_id_of(event: Any) -> int | None:
     return _int_or_none(getattr(event, "chat_id", None)) or _int_or_none(
         getattr(getattr(event, "message", None), "chat_id", None)
     )
+
+
+def _sender_id_of(event: Any) -> int | None:
+    return _int_or_none(getattr(event, "sender_id", None)) or _int_or_none(
+        getattr(getattr(event, "message", None), "sender_id", None)
+    )
+
+
+def _is_outgoing(event: Any) -> bool:
+    """Whether this account sent the message — the owner, or the bridge itself."""
+    message = getattr(event, "message", None) or event
+    return bool(getattr(message, "out", False))
 
 
 def _int_or_none(value: Any) -> int | None:

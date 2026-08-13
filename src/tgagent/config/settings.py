@@ -105,7 +105,7 @@ class LLMSettings(BaseModel):
         default=None, description="Override the provider endpoint (OpenAI-compatible gateways)"
     )
 
-    max_output_tokens: int = Field(default=8192, ge=64, le=200_000)
+    max_output_tokens: int = Field(default=32768, ge=64, le=200_000)
 
     #: ``None`` means "do not send the parameter". Several current models reject
     #: sampling parameters outright, so an explicit opt-in is the only safe default.
@@ -437,6 +437,54 @@ class TelegramControlSettings(BaseModel):
         return v
 
 
+class AutoReplySettings(BaseModel):
+    """Answering other people's messages on the account owner's behalf.
+
+    A *watch* is a standing instruction bound to one chat — "reply to Alex the
+    way I would while I am in the air" — that turns each arriving message in that
+    chat into an agent run whose answer is sent back as the account.
+
+    This is the only path in the system where the account speaks to somebody else
+    without a per-message confirmation, so it is off until it is turned on, every
+    watch expires on its own, and the limits below bound what a mistake costs.
+    Read ``docs/autoreply.md`` before enabling it.
+    """
+
+    #: Off by default. Turning this on means arriving messages can cause the
+    #: account to send messages, decided by a model, with nobody watching.
+    enabled: bool = Field(default=False)
+
+    #: Watches that may exist at once. Each one is a chat that can be answered
+    #: without you.
+    max_watches: int = Field(default=5, ge=1, le=100)
+
+    #: How long a watch lives when the instruction does not say. A standing
+    #: instruction to speak as you is not something to leave running by accident,
+    #: so it ends on its own unless renewed.
+    default_ttl_minutes: int = Field(default=240, ge=1, le=100_000)
+    #: Ceiling on any requested lifetime, whatever the instruction asks for.
+    max_ttl_minutes: int = Field(default=10_080, ge=1, le=525_600)
+
+    #: Replies one watch may send before it stops. The default is a conversation,
+    #: not a correspondence.
+    max_replies_per_watch: int = Field(default=20, ge=1, le=1000)
+    #: Replies across every watch in a rolling hour. The loop breaker: two
+    #: accounts both running this would otherwise talk to each other forever.
+    max_replies_per_hour: int = Field(default=30, ge=1, le=500)
+    #: Minimum gap between two replies in the same chat, in seconds. Also
+    #: collapses a burst of messages into one answer.
+    cooldown_seconds: float = Field(default=5.0, ge=0.0, le=3600.0)
+
+    #: Prepended to every automatic reply. Empty by default because the point is
+    #: usually to sound like you — but the person on the other end is talking to
+    #: a model believing they are talking to you, and some jurisdictions require
+    #: that to be disclosed. ``"🤖 "`` is a reasonable value.
+    prefix: str = Field(default="", max_length=64)
+
+    #: Show "typing…" in the watched chat while the reply is being written.
+    typing_indicator: bool = Field(default=True)
+
+
 class SchedulerSettings(BaseModel):
     """Background task scheduling."""
 
@@ -484,6 +532,7 @@ class Settings(BaseSettings):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     control: TelegramControlSettings = Field(default_factory=TelegramControlSettings)
+    autoreply: AutoReplySettings = Field(default_factory=AutoReplySettings)
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @model_validator(mode="after")

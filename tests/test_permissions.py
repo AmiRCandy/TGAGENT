@@ -6,6 +6,8 @@ wrong, everything else in the security model is decoration.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tgagent.config.settings import PermissionSettings
@@ -19,8 +21,11 @@ from tgagent.security.permissions import (
     _REVERSIBLE_METHODS,
     OperationRequest,
     PermissionEngine,
+    active_grants,
     canonical_method_key,
     classify,
+    grantable,
+    granted,
     normalise_method,
 )
 
@@ -519,3 +524,125 @@ class TestExplanation:
         explanation = PermissionEngine(PermissionSettings()).explain("obliterate_everything")
         assert explanation.risk is RiskTier.DESTRUCTIVE
         assert not explanation.from_override
+
+
+class TestGrants:
+    """Operations a standing task may perform because its owner said so, once.
+
+    The feature exists because a scheduled run has nobody to confirm with, which
+    otherwise makes every recurring task that *acts* impossible. The tests that
+    matter are the ones about how narrow it is.
+    """
+
+    def _request(self, method: str = "account.UpdateProfile") -> OperationRequest:
+        return OperationRequest(method=method)
+
+    def test_a_grant_lifts_a_refusal_for_an_unattended_run(self) -> None:
+        engine = PermissionEngine(PermissionSettings())
+        assert engine.authorize(self._request(), interactive=False).decision is PolicyDecision.DENY
+
+        with granted(["account.UpdateProfile"], source="scheduled task 'clock'"):
+            verdict = engine.authorize(self._request(), interactive=False)
+        assert verdict.decision is PolicyDecision.ALLOW
+        # And the reason names the grant, so the audit trail says why it was let
+        # through rather than implying the policy allows it.
+        assert "grant" in verdict.reason.lower()
+        assert "clock" in verdict.reason
+
+    def test_a_grant_covers_only_what_it_names(self) -> None:
+        engine = PermissionEngine(PermissionSettings())
+        with granted(["account.UpdateProfile"]):
+            assert (
+                engine.authorize(self._request("messages.SendMessage"), interactive=False).decision
+                is PolicyDecision.DENY
+            )
+
+    def test_a_grant_matches_either_spelling(self) -> None:
+        """Granting `account.UpdateProfile` must cover the friendly call too."""
+        engine = PermissionEngine(PermissionSettings())
+        with granted(["account.UpdateProfile"]):
+            assert engine.authorize(self._request("update_profile"), interactive=False).allowed
+
+    def test_a_grant_ends_with_its_scope(self) -> None:
+        engine = PermissionEngine(PermissionSettings())
+        with granted(["account.UpdateProfile"]):
+            assert active_grants().covers("account.UpdateProfile")
+        assert not active_grants().covers("account.UpdateProfile")
+        assert engine.authorize(self._request(), interactive=False).decision is PolicyDecision.DENY
+
+    async def test_a_grant_does_not_leak_into_a_concurrent_run(self) -> None:
+        """The engine is shared and runs overlap; the grant must not be.
+
+        A scheduled task granted an operation runs beside chat-initiated runs.
+        State on the engine would let one run's grant authorise another's call,
+        which is why this is a ContextVar and not an attribute.
+        """
+        engine = PermissionEngine(PermissionSettings())
+        observed: dict[str, bool] = {}
+
+        async def granted_run() -> None:
+            with granted(["account.UpdateProfile"]):
+                await asyncio.sleep(0)
+                observed["inside"] = engine.authorize(self._request(), interactive=False).allowed
+
+        async def other_run() -> None:
+            await asyncio.sleep(0)
+            observed["beside"] = engine.authorize(self._request(), interactive=False).allowed
+
+        await asyncio.gather(granted_run(), other_run())
+        assert observed == {"inside": True, "beside": False}
+
+    def test_a_grant_does_not_lift_read_only_mode(self) -> None:
+        """read_only_mode is the operator's kill switch, not a per-operation rule."""
+        engine = PermissionEngine(PermissionSettings(read_only_mode=True))
+        with granted(["messages.SendMessage"]):
+            verdict = engine.authorize(self._request("messages.SendMessage"), interactive=False)
+        assert verdict.decision is PolicyDecision.DENY
+        assert "read_only_mode" in verdict.reason
+
+    def test_a_grant_does_not_lift_the_chat_denylist(self) -> None:
+        engine = PermissionEngine(PermissionSettings(chat_denylist=["@work"]))
+        request = OperationRequest(method="messages.SendMessage", target="@work")
+        with granted(["messages.SendMessage"]):
+            verdict = engine.authorize(request, interactive=False)
+        assert verdict.decision is PolicyDecision.DENY
+        assert "denylist" in verdict.reason
+
+    def test_a_grant_does_not_lift_the_per_run_outbound_ceiling(self) -> None:
+        engine = PermissionEngine(PermissionSettings(max_outbound_per_run=1))
+        engine.note_outbound(RiskTier.EXTERNALLY_VISIBLE)
+        with granted(["messages.SendMessage"]):
+            verdict = engine.authorize(self._request("messages.SendMessage"), interactive=False)
+        assert verdict.decision is PolicyDecision.DENY
+        assert "limit" in verdict.reason
+
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "account.DeleteAccount",
+            "account.UpdatePasswordSettings",
+            "auth.ResetAuthorizations",
+            "auth.LogOut",
+            "account.UpdateUsername",
+        ],
+    )
+    def test_what_no_confirmation_can_grant(self, method: str) -> None:
+        """Nothing that can lock the owner out is reachable by answering "yes"."""
+        engine = PermissionEngine(PermissionSettings())
+        reason = grantable(method, engine.explain(method))
+        assert reason is not None
+        assert "policy.yaml" in reason
+
+    def test_an_explicit_deny_in_the_policy_cannot_be_granted(self) -> None:
+        """A tier default is silence. A named rule is the operator's decision."""
+        engine = PermissionEngine(
+            PermissionSettings(method_overrides={"messages.DeleteHistory": PolicyDecision.DENY})
+        )
+        reason = grantable("messages.DeleteHistory", engine.explain("messages.DeleteHistory"))
+        assert reason is not None
+        assert "deliberately" in reason
+
+    def test_an_ordinary_operation_can_be_granted(self) -> None:
+        engine = PermissionEngine(PermissionSettings())
+        assert grantable("messages.SendMessage", engine.explain("messages.SendMessage")) is None
+        assert grantable("account.UpdateProfile", engine.explain("account.UpdateProfile")) is None
