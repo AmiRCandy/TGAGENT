@@ -142,7 +142,7 @@ class AgentSettings(BaseModel):
     """
 
     max_steps: int = Field(default=25, ge=1, le=500, description="LLM round trips per run")
-    max_tool_calls: int = Field(default=100, ge=1, le=2000)
+    max_tool_calls: int = Field(default=200, ge=1, le=2000)
     max_consecutive_tool_errors: int = Field(default=4, ge=1, le=50)
 
     step_timeout: float = Field(default=300.0, gt=0, description="Seconds for one LLM+tools step")
@@ -161,7 +161,7 @@ class AgentSettings(BaseModel):
     max_tool_result_chars: int = Field(default=24_000, ge=500, le=500_000)
 
     parallel_tool_calls: bool = Field(default=True)
-    max_parallel_tools: int = Field(default=4, ge=1, le=32)
+    max_parallel_tools: int = Field(default=6, ge=1, le=32)
 
 
 class PermissionSettings(BaseModel):
@@ -174,7 +174,7 @@ class PermissionSettings(BaseModel):
         default_factory=lambda: {
             RiskTier.READ_ONLY: PolicyDecision.ALLOW,
             RiskTier.REVERSIBLE: PolicyDecision.ALLOW,
-            RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.CONFIRM,
+            RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW,
             RiskTier.DESTRUCTIVE: PolicyDecision.CONFIRM,
             RiskTier.ACCOUNT_SECURITY: PolicyDecision.DENY,
         }
