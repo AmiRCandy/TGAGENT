@@ -140,6 +140,26 @@ actually configured — a wrong value here causes exactly this.
 Four consecutive failures stop the run. The errors are in the output; the audit
 log has the detail.
 
+### Telegram commands get no answer at all
+
+Send `agent ping`. It is answered by the bridge itself — no model, no tokens — so
+what comes back separates the possibilities:
+
+- **Nothing.** The listener is not running, not signed in, or not watching that
+  chat. Check `./hermes logs` for `control.listening`, and `allowed_chats` /
+  `ignored_chats` if other chats do answer.
+- **A pong with `runs in flight: 2`.** It is busy, not dead — `max_concurrent_runs`
+  is reached and your command is queued behind the others.
+- **A pong with `commands this minute: 6/6`.** The loop breaker has fired. That is
+  logged at error level; something sent a burst of commands, and the log says what.
+- **A pong that takes seconds, or a large `command reached me in`.** The host is
+  overloaded, the network is bad, or its clock is wrong — the lag figure compares
+  Telegram's timestamp against the local clock, so skew shows up here.
+
+A pong with everything looking healthy while ordinary instructions still fail
+points at the LLM rather than the bridge: try `tgagent models`, or `tgagent run`
+from the terminal for the full error.
+
 ---
 
 ## Sandbox

@@ -392,6 +392,16 @@ class TelegramControlSettings(BaseModel):
     #: Show the "typing…" indicator while a run is in progress.
     typing_indicator: bool = Field(default=True)
 
+    #: Acknowledge a command immediately with a status message, keep editing it
+    #: while the run is in flight, and finally edit the answer into it. Without
+    #: this a slow run looks exactly like a bridge that died. Turn it off and the
+    #: answer arrives as a fresh message instead — which is the one thing an edit
+    #: does not do: Telegram does not notify for edits.
+    progress_updates: bool = Field(default=True)
+    #: How often that status message is rewritten, in seconds. Every edit is an
+    #: API call, so this is a floor on how much chatter a long run costs.
+    progress_interval: float = Field(default=5.0, ge=1.0, le=60.0)
+
     #: Include the message the command replied to, as fenced untrusted context.
     #: This is what makes ``agent translate this`` work.
     include_reply_context: bool = Field(default=True)

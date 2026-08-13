@@ -170,6 +170,8 @@ The security reasoning behind these defaults is in
 | `control.ignored_chats` | `[]` | Never accept commands here; wins over the allowlist |
 | `control.reply_to_command` | `true` | Answer as a reply, not a loose message |
 | `control.typing_indicator` | `true` | Cosmetic; failures never affect a run |
+| `control.progress_updates` | `true` | Acknowledge at once, edit that message until the answer |
+| `control.progress_interval` | `5.0` | Seconds between those edits |
 | `control.include_reply_context` | `true` | Replied-to message, fenced as untrusted |
 | `control.reply_context_chars` | `2000` | Cap on that context |
 | `control.max_reply_chars` | `3800` | Longer answers are split; Telegram's limit is 4096 |

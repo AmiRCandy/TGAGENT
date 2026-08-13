@@ -213,6 +213,11 @@ class FakeTelegramClient:
         #: Set to an exception to make the next friendly call raise it.
         self.next_error: Exception | None = None
         self.sent: list[dict[str, Any]] = []
+        #: Text of every message this client sent, keyed by id and *with edits
+        #: applied* — what the chat would be showing, rather than the history of
+        #: how it got there. The control bridge edits one message repeatedly, so
+        #: this is what its tests assert against.
+        self.visible: dict[int, str] = {}
         self.downloads: list[str] = []
         self.handlers: list[tuple[Any, Any]] = []
         #: Ids of messages this client sent, in order. The control bridge keys its
@@ -314,11 +319,19 @@ class FakeTelegramClient:
         # so its own output can never be read back as a command.
         self._next_sent_id += 1
         self.sent_ids.append(self._next_sent_id)
+        self.visible[self._next_sent_id] = message
         return FakeMessage(self._next_sent_id, message, out=True, chat_id=entity)
 
     async def edit_message(self, entity: Any = None, **kwargs: Any) -> FakeMessage:
+        # Editing needs a resolvable peer exactly as sending does, so an id the
+        # session cannot address must fail here too.
+        self._check_addressable(entity)
         self.calls.append(("edit_message", {"entity": entity, **kwargs}))
-        return FakeMessage(kwargs.get("message", 1), kwargs.get("text", ""), out=True)
+        message_id = kwargs.get("message")
+        text = str(kwargs.get("text", ""))
+        if isinstance(message_id, int):
+            self.visible[message_id] = text
+        return FakeMessage(message_id if isinstance(message_id, int) else 1, text, out=True)
 
     async def delete_messages(self, entity: Any = None, **kwargs: Any) -> list[Any]:
         self._maybe_raise()

@@ -40,6 +40,22 @@ answered rather than denied: the bridge asks in the originating chat and waits f
 around each run, which is what lets one shared provider serve concurrent runs in
 different chats — the gateway calls ``confirm()`` deep inside the run, and the
 context variable tells the provider which chat to ask.
+
+Knowing it is alive
+-------------------
+A run can take a minute, and over a chat window silence is ambiguous: a model
+still thinking looks exactly like a bridge that died. Two things answer that
+without narrating every tool call into the chat:
+
+* **A status message.** The command is acknowledged immediately with one message,
+  which is then *edited* every ``control.progress_interval`` seconds with what the
+  run is doing, and finally edited into the answer itself. Editing rather than
+  sending is what keeps this from being the flood the loop breaker exists to
+  prevent: one message per run, however long it runs.
+* **``agent ping``.** Answered by the bridge itself — no model, no tokens — with
+  the Telegram round trip, how late the command arrived, and how long the process
+  has been listening. It is the one command that still works when the LLM is
+  misconfigured, which is exactly when you want to ask.
 """
 
 from __future__ import annotations
@@ -50,10 +66,11 @@ import hashlib
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from tgagent.agent.events import AgentEvent, EventKind, RunResult
@@ -80,6 +97,11 @@ _NO = frozenset({"n", "no", "nope", "deny", "stop", "cancel", "don't", "dont", "
 _STOP_WORDS = frozenset({"stop", "cancel", "abort", "halt"})
 _RESET_WORDS = frozenset({"reset", "new", "forget", "clear"})
 _HELP_WORDS = frozenset({"help", "?", "usage"})
+#: A liveness check, answered by the bridge without going near the model.
+_PING_WORDS = frozenset({"ping", "alive", "status"})
+
+#: Frames for the status message, so consecutive edits differ visibly.
+_PULSE = ("⏳", "⌛")
 
 #: Characters that may stand in for the space after the trigger word.
 _SEPARATORS = ":,-\u2013\u2014"
@@ -87,6 +109,7 @@ _SEPARATORS = ":,-\u2013\u2014"
 _HELP_TEXT = (
     "**tgagent**\n"
     "`{trigger} <instruction>` — run an instruction with this chat as context\n"
+    "`{trigger} ping` — check the bridge is alive, and how fast\n"
     "`{trigger} stop` — cancel the run in progress here\n"
     "`{trigger} reset` — start a fresh conversation for this chat\n"
     "`{trigger} help` — this message\n\n"
@@ -264,11 +287,184 @@ class ChatConfirmation:
         return await self._bridge.ask_in_chat(source, request)
 
 
+# --------------------------------------------------------------- progress ----
+@dataclass(slots=True)
+class _Progress:
+    """What a run is doing, at the resolution a chat window deserves.
+
+    Mutated by :meth:`_StatusMessage.observe` as runtime events arrive and read by
+    the ticker that does the writing. The split is the point: events arrive in
+    bursts and writing on each one would be a message flood, so state is cheap to
+    update and only the timer decides when the chat hears about it.
+    """
+
+    started: float
+    note: str = "Working on it"
+    step: int = 0
+    tool_calls: int = 0
+    #: The tool currently running, if any.
+    tool: str = ""
+    #: Number of edits made so far, which drives the pulse frame.
+    ticks: int = 0
+
+    @property
+    def elapsed(self) -> float:
+        return max(0.0, time.monotonic() - self.started)
+
+    def render(self) -> str:
+        """One or two lines. Always different from the last render, because the
+        elapsed time is in it — Telegram rejects an edit that changes nothing."""
+        facts = []
+        if self.step:
+            facts.append(f"step {self.step}")
+        if self.tool_calls:
+            facts.append(f"{self.tool_calls} tool call{'' if self.tool_calls == 1 else 's'}")
+        tail = " · ".join(facts)
+        head = f"{_PULSE[self.ticks % len(_PULSE)]} {self.note}… _{_duration(self.elapsed)}_"
+        if self.tool:
+            return head + f"\n→ `{self.tool}`" + (f" · {tail}" if tail else "")
+        return head + (f" · {tail}" if tail else "")
+
+
+@dataclass(slots=True, frozen=True)
+class _ChatWriter:
+    """The chat operations a status message needs, already bound to one chat.
+
+    Passing these in rather than the bridge itself keeps the status message from
+    knowing anything about commands, permissions, or Telethon: it writes text and
+    is told whether that worked.
+    """
+
+    #: ``send(text, reply_to=…) -> ids``
+    send: Callable[..., Awaitable[list[int]]]
+    #: ``edit(message_id, text) -> did it work``
+    edit: Callable[..., Awaitable[bool]]
+    #: ``reply(text)`` — chunked, as a fresh message; the fallback path.
+    reply: Callable[..., Awaitable[None]]
+    #: Characters per message.
+    limit: int
+    #: The command to answer in thread, if any.
+    reply_to: int | None = None
+    #: Only used to name the ticker task.
+    chat_id: int = 0
+
+
+class _StatusMessage:
+    """The one message in the chat that tracks a run from start to answer.
+
+    Sent as soon as the command is accepted, edited on a fixed interval while the
+    run is in flight, and finally edited into the answer. Every part of it is
+    cosmetic by construction: a chat that will not accept the message, or will not
+    let it be edited, degrades to the plain behaviour of sending the answer when
+    it is ready, and the run never notices.
+    """
+
+    def __init__(self, writer: _ChatWriter, *, interval: float, enabled: bool) -> None:
+        self._writer = writer
+        self._interval = interval
+        self._enabled = enabled
+        self._progress = _Progress(started=time.monotonic())
+        self._message_id: int | None = None
+        self._ticker: asyncio.Task[None] | None = None
+
+    # ------------------------------------------------------------ lifecycle ---
+    async def open(self, note: str = "") -> None:
+        """Acknowledge the command, and start editing that acknowledgement."""
+        if not self._enabled:
+            return
+        if note:
+            self._progress.note = note
+        try:
+            ids = await self._writer.send(self._progress.render(), reply_to=self._writer.reply_to)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the run matters, the placeholder does not
+            log.debug("control.status_open_failed", error=str(exc))
+            return
+        if not ids:
+            return
+        self._message_id = ids[0]
+        self._ticker = asyncio.create_task(
+            self._tick(), name=f"control-status-{self._writer.chat_id}"
+        )
+
+    async def close(self) -> None:
+        """Stop ticking, and wait for an edit already in flight to land.
+
+        Waiting is not tidiness: an edit that is mid-flight when the ticker is
+        cancelled could otherwise land *after* the final text and leave the run
+        looking like it never finished.
+        """
+        ticker, self._ticker = self._ticker, None
+        if ticker is None:
+            return
+        ticker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ticker
+
+    async def finish(self, text: str) -> None:
+        """Put *text* where the status was, however that has to happen."""
+        await self.close()
+        chunks = _chunk(text, self._writer.limit)
+        if not await self._write(chunks[0]):
+            # No status message to edit — either it was never sent or the chat
+            # refused the edit. The answer is what matters, so send it plainly.
+            await self._writer.reply(text)
+            return
+        for chunk in chunks[1:]:
+            await self._writer.send(chunk, reply_to=None)
+
+    # -------------------------------------------------------------- updating --
+    def set_note(self, note: str) -> None:
+        """Change the headline. Takes effect on the next tick, not immediately."""
+        self._progress.note = note
+
+    def observe(self, event: AgentEvent) -> None:
+        """Fold one runtime event into the progress state. Never does I/O."""
+        progress = self._progress
+        match event.kind:
+            case EventKind.STEP_STARTED:
+                progress.step = _int_or_none(event.data.get("step")) or progress.step + 1
+                progress.note = "Thinking"
+                progress.tool = ""
+            case EventKind.TOOL_CALL_STARTED:
+                progress.tool = str(event.data.get("tool") or "")
+                progress.tool_calls += 1
+                progress.note = "Working on it"
+            case EventKind.TOOL_CALL_FINISHED:
+                progress.tool = ""
+            case EventKind.THINKING_DELTA:
+                progress.note = "Thinking"
+            case EventKind.TEXT_DELTA | EventKind.ASSISTANT_MESSAGE:
+                progress.note = "Writing the answer"
+            case EventKind.CONTEXT_COMPACTED:
+                progress.note = "Compacting the conversation"
+            case _:
+                pass
+
+    async def _tick(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval)
+            self._progress.ticks += 1
+            if not await self._write(self._progress.render()):
+                return  # the message is gone; stop chasing it
+
+    async def _write(self, text: str) -> bool:
+        if self._message_id is None:
+            return False
+        if await self._writer.edit(self._message_id, text):
+            return True
+        self._message_id = None
+        return False
+
+
 # ------------------------------------------------------------------ bridge ----
 @dataclass(slots=True)
 class _ActiveRun:
     task: asyncio.Task[None]
     cancel: asyncio.Event
+    #: The run's status message, so a confirmation prompt can say so in it.
+    status: _StatusMessage | None = None
 
 
 class TelegramControlBridge:
@@ -304,6 +500,8 @@ class TelegramControlBridge:
         self._own_messages: deque[tuple[int, int]] = deque(maxlen=256)
         self._handler: Any = None
         self._stopped = asyncio.Event()
+        #: When this bridge came up, for what ``ping`` reports.
+        self._since = time.monotonic()
 
     # ---------------------------------------------------------- lifecycle ----
     async def start(self) -> None:
@@ -401,6 +599,15 @@ class TelegramControlBridge:
     async def _dispatch(self, source: CommandSource) -> bool:
         """Handle a built-in word, or start a run."""
         word = source.instruction.strip().casefold().rstrip(".!")
+        # A trailing question mark is punctuation on "ping?" — but "?" on its own
+        # is the help word, so stripping must never empty the instruction.
+        word = word.rstrip("?") or word
+
+        # Answered before the "one run per chat" check on purpose: asking whether
+        # the bridge is alive is most useful while something is occupying it.
+        if word in _PING_WORDS:
+            await self._pong(source)
+            return True
 
         if word in _STOP_WORDS:
             run = self._active.get(source.key)
@@ -436,28 +643,61 @@ class TelegramControlBridge:
         return True
 
     # ----------------------------------------------------------- the run ------
+    def _status_for(self, source: CommandSource) -> _StatusMessage:
+        """The status message for a run in *source*'s chat.
+
+        Built even when ``progress_updates`` is off: a disabled status message
+        sends nothing and its ``finish`` falls straight through to a plain reply,
+        so the run has one path rather than two.
+        """
+        return _StatusMessage(
+            _ChatWriter(
+                send=partial(self._send, source),
+                edit=partial(self._edit, source),
+                reply=partial(self._reply, source),
+                limit=self._settings.max_reply_chars,
+                reply_to=self._reply_target(source),
+                chat_id=source.chat_id,
+            ),
+            interval=self._settings.progress_interval,
+            enabled=self._settings.progress_updates,
+        )
+
     async def _run_command(self, source: CommandSource, cancel: asyncio.Event) -> None:
         token = _active_source.set(source)
+        status = self._status_for(source)
+        # Reachable from ask_in_chat, which has the source but not the run.
+        if (run := self._active.get(source.key)) is not None:
+            run.status = status
         try:
+            # Acknowledged before queueing, not after: the whole reason this
+            # message exists is that waiting is when you doubt it is listening.
+            await status.open("Queued" if self._semaphore.locked() else "Working on it")
             async with self._semaphore:
                 if cancel.is_set():
+                    await status.finish("Cancelled.")
                     return
-                await self._execute(source, cancel)
+                status.set_note("Working on it")
+                await self._execute(source, cancel, status)
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
-                await self._reply(source, "Cancelled.")
+                await status.finish("Cancelled.")
             raise
         # The operator gets told what broke; the bridge keeps listening.
         except Exception as exc:
             log.error("control.run_failed", chat=source.chat_id, error=str(exc), exc_info=True)
             with contextlib.suppress(Exception):
-                await self._reply(source, f"⚠️ That failed: {exc}")
+                await status.finish(f"⚠️ That failed: {exc}")
         finally:
+            with contextlib.suppress(Exception):
+                await status.close()
             _active_source.reset(token)
             self.confirmations.reset()
             self._active.pop(source.key, None)
 
-    async def _execute(self, source: CommandSource, cancel: asyncio.Event) -> None:
+    async def _execute(
+        self, source: CommandSource, cancel: asyncio.Event, status: _StatusMessage
+    ) -> None:
         runtime: AgentRuntime = self._runtime_factory()
         conversation_id = self._conversation_id(source)
 
@@ -473,11 +713,13 @@ class TelegramControlBridge:
                 conversation_id=conversation_id,
                 interactive=True,
                 cancel=cancel,
-                on_event=self._on_agent_event,
+                # A closure, not a bound method: the status message belongs to
+                # this run, and concurrent runs in other chats have their own.
+                on_event=lambda event: self._on_agent_event(event, status),
             )
 
         self._conversations[self._conversation_key(source)] = result.conversation_id
-        await self._reply(source, _format_answer(result))
+        await status.finish(_format_answer(result))
         log.info(
             "control.run_finished",
             chat=source.chat_id,
@@ -486,10 +728,12 @@ class TelegramControlBridge:
             stopped_because=result.stopped_because,
         )
 
-    def _on_agent_event(self, event: AgentEvent) -> None:
-        # The bridge deliberately does not narrate tool calls into the chat:
-        # every one would be an outgoing message, which is both noisy and the
-        # thing the loop breaker exists to bound. Progress goes to the log.
+    def _on_agent_event(self, event: AgentEvent, status: _StatusMessage) -> None:
+        # Events fold into the status message, which is rewritten on a timer —
+        # the bridge never narrates a tool call as its own message. Every one
+        # would be an outgoing message, which is both noisy and the thing the
+        # loop breaker exists to bound. The detail goes to the log.
+        status.observe(event)
         if event.kind is EventKind.ERROR:
             log.warning("control.run_error", detail=event.text)
 
@@ -587,6 +831,7 @@ class TelegramControlBridge:
 
         future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         self._pending_confirmations[source.key] = _PendingConfirmation(future, request)
+        status = run.status if (run := self._active.get(source.key)) is not None else None
         try:
             await self._reply(
                 source,
@@ -594,8 +839,14 @@ class TelegramControlBridge:
                 f"```\n{request.render()}\n```\n"
                 f"Reply `yes` to allow or `no` to refuse.",
             )
+            # Otherwise the status message goes on claiming to be working, when
+            # what it is actually doing is waiting for the operator.
+            if status is not None:
+                status.set_note("Waiting for your `yes` or `no`")
             approved = await future
         finally:
+            if status is not None:
+                status.set_note("Working on it")
             self._pending_confirmations.pop(source.key, None)
 
         return ConfirmationOutcome(
@@ -627,9 +878,56 @@ class TelegramControlBridge:
         log.info("control.confirmation_answered", chat=chat_id, approved=approved)
         return True
 
+    # ------------------------------------------------------------- liveness ---
+    async def _pong(self, source: CommandSource) -> None:
+        """Answer ``ping`` with numbers, without going anywhere near the model.
+
+        Deliberately self-contained. It proves the process is running, that
+        Telegram is reachable *from here*, and how far behind the listener is —
+        none of which should cost tokens to find out, or stop working on the day
+        the LLM is what is broken.
+        """
+        lag = _delivery_lag(source.date)
+        started = time.perf_counter()
+        ids = await self._send(source, "🏓 …", reply_to=self._reply_target(source))
+        round_trip = (time.perf_counter() - started) * 1000
+
+        lines = ["🏓 **pong**", f"send round-trip: `{round_trip:.0f} ms`"]
+        if lag is not None:
+            # Telegram stamps the command, this host reads the clock, so a wrong
+            # clock here shows up as lag. Worth knowing either way.
+            reached = f"{lag * 1000:.0f} ms" if lag < 1 else _duration(lag)
+            lines.append(f"command reached me in: `{reached}`")
+        lines.append(f"listening for: `{_duration(time.monotonic() - self._since)}`")
+        lines.append(
+            f"runs in flight: `{len(self._active)}` · commands this minute: "
+            f"`{len(self._accepted)}/{self._settings.max_commands_per_minute}`"
+        )
+        text = "\n".join(lines)
+
+        log.info(
+            "control.ping",
+            chat=source.chat_id,
+            round_trip_ms=round(round_trip, 1),
+            lag_ms=round(lag * 1000, 1) if lag is not None else None,
+            active_runs=len(self._active),
+        )
+        if not (ids and await self._edit(source, ids[0], text)):
+            await self._reply(source, text)
+
     # --------------------------------------------------------------- io ------
     async def _reply(self, source: CommandSource, text: str) -> None:
-        """Deliver text to the chat, split across Telegram's length limit.
+        """Deliver text to the chat, split across Telegram's length limit."""
+        reply_to = self._reply_target(source)
+        for index, chunk in enumerate(_chunk(text, self._settings.max_reply_chars)):
+            await self._send(source, chunk, reply_to=reply_to if index == 0 else None)
+
+    def _reply_target(self, source: CommandSource) -> int | None:
+        """The message to answer in thread, if answering in thread at all."""
+        return source.message_id if self._settings.reply_to_command else None
+
+    async def _send(self, source: CommandSource, text: str, *, reply_to: int | None) -> list[int]:
+        """Send one message and remember its id. Returns the ids it was given.
 
         Sent through the client rather than the gateway on purpose: this is the
         control plane answering its operator, not the agent acting on the
@@ -637,17 +935,35 @@ class TelegramControlBridge:
         an ``EXTERNALLY_VISIBLE`` write needing confirmation — and the
         confirmation would be delivered by the very call being confirmed.
         """
-        client = self._manager.client
-        reply_to = source.message_id if self._settings.reply_to_command else None
-        for index, chunk in enumerate(_chunk(text, self._settings.max_reply_chars)):
-            sent = await client.send_message(
-                source.destination,
-                chunk,
-                reply_to=reply_to if index == 0 else None,
-                link_preview=False,
-            )
-            for message_id in _sent_ids(sent):
-                self._own_messages.append((source.chat_id, message_id))
+        sent = await self._manager.client.send_message(
+            source.destination, text, reply_to=reply_to, link_preview=False
+        )
+        ids = _sent_ids(sent)
+        # Remembered so the bridge's own output can never be read back as a
+        # command — the status message is as much a command-shaped risk as any
+        # other outgoing message.
+        self._own_messages.extend((source.chat_id, message_id) for message_id in ids)
+        return ids
+
+    async def _edit(self, source: CommandSource, message_id: int, text: str) -> bool:
+        """Rewrite one of our own messages. False if the chat would not have it.
+
+        Failure is ordinary here — the message may have been deleted, the edit
+        window may have closed, or the text may be unchanged — and it is never
+        worth failing a run over, so callers get a boolean rather than an
+        exception and fall back to sending.
+        """
+        editor = getattr(self._manager.client, "edit_message", None)
+        if editor is None:
+            return False
+        try:
+            await editor(source.destination, message=message_id, text=text, link_preview=False)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            log.debug("control.edit_failed", chat=source.chat_id, error=str(exc))
+            return False
 
     @contextlib.asynccontextmanager
     async def _typing(self, source: CommandSource) -> AsyncIterator[None]:
@@ -748,6 +1064,30 @@ def _format_answer(result: RunResult) -> str:
     if result.errors:
         answer += "\n" + "\n".join(f"_! {message}_" for message in result.errors[:3])
     return answer
+
+
+def _duration(seconds: float) -> str:
+    """A compact, human duration: ``8s``, ``1m 05s``, ``2h 07m``."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes, remainder = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _delivery_lag(date: datetime | None) -> float | None:
+    """Seconds between Telegram stamping the command and the bridge reading it.
+
+    Clamped at zero: the stamp comes from Telegram's clock and the comparison
+    from this host's, so a host running slightly ahead would otherwise report a
+    command that arrived before it was sent.
+    """
+    if date is None:
+        return None
+    stamped = date if date.tzinfo is not None else date.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - stamped).total_seconds())
 
 
 def _chunk(text: str, limit: int) -> list[str]:

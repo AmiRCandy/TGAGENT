@@ -143,6 +143,17 @@ you    yes
 bot    Sent.
 ```
 
+A run that takes a while says so while it takes it. The command is acknowledged
+at once, and that one message is edited every few seconds with what the agent is
+doing until the answer replaces it — so waiting never looks like a bridge that
+died. `agent ping` settles the question outright, and is answered by the bridge
+itself rather than the model:
+
+```
+you    agent ping
+bot    🏓 pong · send round-trip: 142 ms · listening for: 3h 12m
+```
+
 The instruction arrives with its own context — which chat, who sent it, what it
 replied to — so "here", "this", and "them" resolve without you spelling them out.
 Only *your own* messages count as commands; everyone else's text, including a

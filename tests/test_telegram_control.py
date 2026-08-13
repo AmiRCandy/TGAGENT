@@ -22,12 +22,14 @@ from tests.fakes import (
     FakeMessage,
     FakePeer,
 )
-from tgagent.agent.events import RunResult
+from tgagent.agent.events import AgentEvent, EventKind, RunResult
 from tgagent.config.settings import Settings, TelegramControlSettings
 from tgagent.interfaces.telegram_control import (
     CommandSource,
     TelegramControlBridge,
     _active_source,
+    _ChatWriter,
+    _StatusMessage,
     build_prompt,
     parse_command,
 )
@@ -44,9 +46,17 @@ STRANGER_ID = 77
 class StubRuntime:
     """Records what it was asked to run and answers from a script."""
 
-    def __init__(self, answer: str = "done", *, hang: bool = False) -> None:
+    def __init__(
+        self,
+        answer: str = "done",
+        *,
+        hang: bool = False,
+        events: list[AgentEvent] | None = None,
+    ) -> None:
         self.answer = answer
         self.hang = hang
+        #: Emitted before answering, for what the status message makes of them.
+        self.events = events or []
         self.prompts: list[str] = []
         self.conversations: list[str | None] = []
         self.interactive: list[bool] = []
@@ -65,6 +75,9 @@ class StubRuntime:
         self.conversations.append(conversation_id)
         self.interactive.append(interactive)
         self.started.set()
+        for event in self.events:
+            if on_event is not None:
+                on_event(event)
         if self.hang:
             # Wait to be cancelled, so "one run per chat" and `agent stop` are
             # exercised against a run that is genuinely in flight.
@@ -110,6 +123,16 @@ async def settle() -> None:
     """Let bridge-spawned run tasks reach completion."""
     for _ in range(20):
         await asyncio.sleep(0)
+
+
+def shown(client: Any) -> list[str]:
+    """What the chat is left showing, in the order the messages appeared.
+
+    Not the same as ``client.sent``. A run acknowledges the command with a status
+    message and then *edits* it — including into the final answer — so the history
+    of sends is not what the operator ends up looking at.
+    """
+    return list(client.visible.values())
 
 
 # --------------------------------------------------------------- parsing ------
@@ -215,11 +238,11 @@ class TestDispatch:
 
         assert len(runtime.prompts) == 1
         assert "what did I miss?" in runtime.prompts[0]
+        # One message: the acknowledgement, edited into the answer.
+        assert shown(manager.client) == ["You missed three messages."]
         # Addressed by the event's peer, not its raw id — see
         # test_the_reply_addresses_the_chat_by_resolvable_peer.
-        assert manager.client.sent == [
-            {"entity": FakePeer(-100123), "message": "You missed three messages."}
-        ]
+        assert manager.client.sent[0]["entity"] == FakePeer(-100123)
 
     async def test_the_answer_replies_to_the_command(self, manager: FakeClientManager) -> None:
         bridge = make_bridge(manager)
@@ -248,9 +271,14 @@ class TestDispatch:
         await bridge.handle_event(FakeControlEvent("agent go", chat_id=7383856385, out=True))
         await settle()
 
-        assert [entry["message"] for entry in manager.client.sent] == ["here you go"]
-        sends = [args for name, args in manager.client.calls if name == "send_message"]
-        assert not isinstance(sends[0]["entity"], int)
+        assert shown(manager.client) == ["here you go"]
+        # Every write, the status message and the edit that carries the answer
+        # included, has to address the chat by something Telethon can resolve.
+        addressed = [
+            args for name, args in manager.client.calls if name in ("send_message", "edit_message")
+        ]
+        assert addressed
+        assert not any(isinstance(args["entity"], int) for args in addressed)
 
     async def test_the_typing_indicator_also_uses_the_peer(
         self, manager: FakeClientManager
@@ -274,7 +302,8 @@ class TestDispatch:
         await bridge.handle_event(event)
         await settle()
 
-        assert manager.client.sent == [{"entity": -100123, "message": "done"}]
+        assert shown(manager.client) == ["done"]
+        assert manager.client.sent[0]["entity"] == -100123
 
     async def test_an_ordinary_message_is_ignored(self, manager: FakeClientManager) -> None:
         runtime = StubRuntime()
@@ -326,7 +355,8 @@ class TestDispatch:
         await bridge.handle_event(FakeControlEvent("agent report", out=True))
         await settle()
 
-        chunks = [entry["message"] for entry in manager.client.sent]
+        # The first chunk replaces the status message; the rest follow it.
+        chunks = shown(manager.client)
         assert len(chunks) > 1
         assert all(len(chunk) <= 1000 for chunk in chunks)
         assert "line 0" in chunks[0] and "line 399" in chunks[-1]
@@ -340,7 +370,7 @@ class TestDispatch:
         await bridge.handle_event(FakeControlEvent("agent go", out=True))
         await settle()
 
-        assert "model exploded" in manager.client.sent[0]["message"]
+        assert "model exploded" in shown(manager.client)[0]
 
     async def test_the_reply_context_reaches_the_prompt(self, manager: FakeClientManager) -> None:
         runtime = StubRuntime()
@@ -477,7 +507,7 @@ class TestBuiltIns:
         await settle()
 
         assert len(runtime.prompts) == 1
-        assert "Still working" in manager.client.sent[0]["message"]
+        assert any("Still working" in text for text in shown(manager.client))
         await bridge.stop()
 
     async def test_stop_cancels_the_run_in_flight(self, manager: FakeClientManager) -> None:
@@ -515,6 +545,257 @@ class TestBuiltIns:
         await settle()
 
         assert runtime.conversations[0] != runtime.conversations[1]
+
+
+# ------------------------------------------------------------- progress -------
+class RecordingWriter:
+    """A chat, reduced to the three things a status message does to one."""
+
+    def __init__(self, *, editable: bool = True) -> None:
+        self.sends: list[str] = []
+        #: Every edit tried, whether or not the chat accepted it.
+        self.attempts: list[str] = []
+        self.edits: list[str] = []
+        self.replies: list[str] = []
+        self.editable = editable
+        self._next_id = 100
+
+    async def send(self, text: str, *, reply_to: int | None = None) -> list[int]:
+        self.sends.append(text)
+        self._next_id += 1
+        return [self._next_id]
+
+    async def edit(self, message_id: int, text: str) -> bool:
+        self.attempts.append(text)
+        if not self.editable:
+            return False
+        self.edits.append(text)
+        return True
+
+    async def reply(self, text: str) -> None:
+        self.replies.append(text)
+
+    def status(
+        self, *, interval: float = 0.01, enabled: bool = True, limit: int = 3800
+    ) -> _StatusMessage:
+        return _StatusMessage(
+            _ChatWriter(send=self.send, edit=self.edit, reply=self.reply, limit=limit),
+            interval=interval,
+            enabled=enabled,
+        )
+
+
+class TestStatusMessage:
+    """The message that says the run is still alive, on its own."""
+
+    async def test_the_command_is_acknowledged_then_becomes_the_answer(self) -> None:
+        writer = RecordingWriter()
+        status = writer.status(interval=10)
+
+        await status.open()
+        assert len(writer.sends) == 1
+        assert "Working on it" in writer.sends[0]
+
+        await status.finish("the answer")
+        # One message from start to finish, not an acknowledgement plus a reply.
+        assert writer.edits[-1] == "the answer"
+        assert len(writer.sends) == 1
+        assert writer.replies == []
+
+    async def test_it_keeps_editing_while_the_run_lasts(self) -> None:
+        writer = RecordingWriter()
+        status = writer.status(interval=0.01)
+
+        await status.open()
+        await asyncio.sleep(0.05)
+        await status.close()
+
+        assert len(writer.edits) >= 2
+        # Telegram refuses an edit that changes nothing, so consecutive renders
+        # have to differ — which is what the pulse frame is for.
+        assert writer.edits[0] != writer.edits[1]
+
+    async def test_the_edits_say_what_the_run_is_doing(self) -> None:
+        writer = RecordingWriter()
+        status = writer.status(interval=0.01)
+        await status.open()
+
+        status.observe(AgentEvent.make(EventKind.STEP_STARTED, data={"step": 2}))
+        status.observe(
+            AgentEvent.make(EventKind.TOOL_CALL_STARTED, data={"tool": "telegram_search"})
+        )
+        await asyncio.sleep(0.03)
+        await status.close()
+
+        assert "telegram_search" in writer.edits[-1]
+        assert "step 2" in writer.edits[-1]
+
+    async def test_a_chat_that_refuses_edits_still_gets_the_answer(self) -> None:
+        writer = RecordingWriter(editable=False)
+        status = writer.status(interval=0.01)
+
+        await status.open()
+        await asyncio.sleep(0.05)
+        await status.finish("the answer")
+
+        assert writer.replies == ["the answer"]
+        # And it stopped chasing a message it cannot edit after the first refusal,
+        # rather than spending an API call per interval for the rest of the run.
+        assert len(writer.attempts) == 1
+
+    async def test_a_long_answer_overflows_into_new_messages(self) -> None:
+        writer = RecordingWriter()
+        status = writer.status(interval=10, limit=20)
+
+        await status.open()
+        await status.finish("\n".join(f"line {index}" for index in range(20)))
+
+        assert writer.edits[-1].startswith("line 0")
+        assert len(writer.sends) > 1
+        assert writer.sends[-1].endswith("line 19")
+
+    async def test_nothing_is_sent_when_progress_updates_are_off(self) -> None:
+        writer = RecordingWriter()
+        status = writer.status(enabled=False)
+
+        await status.open()
+        assert writer.sends == []
+
+        await status.finish("the answer")
+        assert writer.replies == ["the answer"]
+        assert writer.attempts == []
+
+
+class TestProgressInTheChat:
+    """The same thing, wired to a bridge — a run's whole visible lifecycle."""
+
+    async def test_a_slow_run_is_acknowledged_immediately(self, manager: FakeClientManager) -> None:
+        runtime = StubRuntime(hang=True)
+        bridge = make_bridge(manager, runtime)
+
+        await bridge.handle_event(FakeControlEvent("agent long job", message_id=77, out=True))
+        await runtime.started.wait()
+
+        assert "Working on it" in shown(manager.client)[0]
+        # In thread, like any other answer.
+        assert manager.client.calls[0][1]["reply_to"] == 77
+        await bridge.stop()
+
+    async def test_the_status_is_edited_until_the_run_ends(
+        self, manager: FakeClientManager
+    ) -> None:
+        """The point of the whole feature: silence is indistinguishable from death."""
+        runtime = StubRuntime(hang=True)
+        bridge = make_bridge(manager, runtime, progress_interval=1.0)
+
+        await bridge.handle_event(FakeControlEvent("agent long job", out=True))
+        await runtime.started.wait()
+        await asyncio.sleep(1.2)
+
+        assert [name for name, _ in manager.client.calls if name == "edit_message"]
+        await bridge.stop()
+        assert shown(manager.client) == ["Cancelled."]
+
+    async def test_what_the_agent_is_doing_reaches_the_chat(
+        self, manager: FakeClientManager
+    ) -> None:
+        runtime = StubRuntime(
+            hang=True,
+            events=[AgentEvent.make(EventKind.TOOL_CALL_STARTED, data={"tool": "telegram_search"})],
+        )
+        bridge = make_bridge(manager, runtime, progress_interval=1.0)
+
+        await bridge.handle_event(FakeControlEvent("agent find it", out=True))
+        await runtime.started.wait()
+        await asyncio.sleep(1.2)
+
+        edits = [args["text"] for name, args in manager.client.calls if name == "edit_message"]
+        assert edits and "telegram_search" in edits[-1]
+        await bridge.stop()
+
+    async def test_a_queued_run_says_it_is_queued(self, manager: FakeClientManager) -> None:
+        runtime = StubRuntime(hang=True)
+        bridge = make_bridge(manager, runtime, max_concurrent_runs=1)
+
+        await bridge.handle_event(FakeControlEvent("agent first", chat_id=-1, out=True))
+        await runtime.started.wait()
+        await bridge.handle_event(FakeControlEvent("agent second", chat_id=-2, out=True))
+        await settle()
+
+        assert any("Queued" in text for text in shown(manager.client))
+        await bridge.stop()
+
+    async def test_progress_updates_can_be_turned_off(self, manager: FakeClientManager) -> None:
+        """Off, the answer arrives as a fresh message — which is what notifies."""
+        bridge = make_bridge(manager, progress_updates=False)
+
+        await bridge.handle_event(FakeControlEvent("agent go", out=True))
+        await settle()
+
+        assert shown(manager.client) == ["done"]
+        assert not [name for name, _ in manager.client.calls if name == "edit_message"]
+
+
+# ---------------------------------------------------------------- ping --------
+class TestPing:
+    async def test_ping_is_answered_without_a_run(self, manager: FakeClientManager) -> None:
+        runtime = StubRuntime()
+        bridge = make_bridge(manager, runtime)
+
+        assert await bridge.handle_event(FakeControlEvent("agent ping", out=True))
+        await settle()
+
+        assert runtime.prompts == []
+        answer = shown(manager.client)[0]
+        assert "pong" in answer
+        assert "round-trip" in answer
+        assert "listening for" in answer
+
+    async def test_ping_answers_when_the_model_cannot_even_be_built(
+        self, manager: FakeClientManager
+    ) -> None:
+        """The moment you most want to ask is when the LLM is what is broken."""
+
+        def no_llm() -> Any:
+            raise RuntimeError("no LLM is configured")
+
+        bridge = TelegramControlBridge(manager, no_llm, TelegramControlSettings(), me_id=OWNER_ID)
+
+        await bridge.handle_event(FakeControlEvent("agent ping", out=True))
+        await settle()
+
+        assert "pong" in shown(manager.client)[0]
+
+    async def test_ping_is_answered_while_a_run_is_in_flight(
+        self, manager: FakeClientManager
+    ) -> None:
+        runtime = StubRuntime(hang=True)
+        bridge = make_bridge(manager, runtime)
+
+        await bridge.handle_event(FakeControlEvent("agent long job", message_id=1, out=True))
+        await runtime.started.wait()
+        await bridge.handle_event(FakeControlEvent("agent ping", message_id=2, out=True))
+        await settle()
+
+        texts = shown(manager.client)
+        assert any("pong" in text for text in texts)
+        assert any("runs in flight: `1`" in text for text in texts)
+        await bridge.stop()
+
+    async def test_a_stranger_cannot_ping(self, manager: FakeClientManager) -> None:
+        """Silence, like every other command from somebody who may not send one."""
+        bridge = make_bridge(manager)
+
+        assert not await bridge.handle_event(
+            FakeControlEvent(
+                "agent ping",
+                sender_id=STRANGER_ID,
+                out=False,
+                sender=FakeEntity(STRANGER_ID, username="mallory"),
+            )
+        )
+        await settle()
+        assert manager.client.sent == []
 
 
 # -------------------------------------------------------- confirmations -------
