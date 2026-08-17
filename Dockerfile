@@ -84,7 +84,7 @@ ENTRYPOINT ["python", "/opt/entrypoint.py"]
 # control.enabled is set — one process for both. Sign in before deploying:
 # either interactively (docker run -it --rm -v tgagent-data:/data tgagent login)
 # or by supplying TGAGENT_SESSION_B64. See docs/deploy-railway.md.
-CMD ["sh", "-c", "sleep 120 && tgagent listen"]
+CMD ["tgagent","listen"]
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=15s --retries=3 \
     CMD tgagent version || exit 1
