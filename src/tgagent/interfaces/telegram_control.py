@@ -76,6 +76,8 @@ from typing import Any
 from tgagent.agent.events import AgentEvent, EventKind, RunResult
 from tgagent.agent.runtime import AgentRuntime
 from tgagent.config.settings import TelegramControlSettings
+from tgagent.errors import TgAgentError
+from tgagent.interfaces.admin import RuntimeAdmin
 from tgagent.interfaces.autoreply import (
     STOPPED_BY_OPERATOR,
     AutoReplyWatcher,
@@ -112,6 +114,13 @@ _WATCH_WORDS = frozenset({"watches", "watching", "autoreply"})
 _UNWATCH_WORDS = frozenset(
     {"unwatch", "autoreply off", "stop replying", "stop autoreply", "stop answering"}
 )
+#: Administration, matched as the *first word* because these take arguments.
+#: Owner-only, and answered here rather than by a tool — see
+#: :mod:`tgagent.interfaces.admin` for why that distinction is the security model.
+_ADMIN_WORDS = frozenset({"policy", "permissions", "llm", "model"})
+#: "I am about to be unreachable." Answered without the model, because you are
+#: boarding.
+_FLIGHT_WORDS = frozenset({"flight", "away", "afk"})
 
 #: Frames for the status message, so consecutive edits differ visibly.
 _PULSE = ("⏳", "⌛")
@@ -130,8 +139,16 @@ _HELP_TEXT = (
 
 #: Appended to the help only where automatic replies are switched on.
 _HELP_AUTOREPLY = (
+    "`{trigger} flight on 3` — answer my private chats for three hours\n"
+    "`{trigger} flight off` — landed; stop\n"
     "`{trigger} watches` — which chats are being answered for you\n"
     "`{trigger} unwatch` — stop answering all of them, now\n"
+)
+
+#: Appended for the account owner only, because only they can use it.
+_HELP_ADMIN = (
+    "`{trigger} policy` — what I am allowed to do, and change it\n"
+    "`{trigger} llm` — which model I am using, and change it\n"
 )
 
 _HELP_FOOTER = "\nReply to a message and the replied-to text is included as context."
@@ -501,6 +518,7 @@ class TelegramControlBridge:
         confirmation_timeout: float = 300.0,
         log_arguments: bool = False,
         watcher: AutoReplyWatcher | None = None,
+        admin: RuntimeAdmin | None = None,
     ) -> None:
         self._manager = manager
         self._runtime_factory = runtime_factory
@@ -511,6 +529,8 @@ class TelegramControlBridge:
         #: Answers other people's messages under a standing instruction. Absent
         #: unless the deployment turned it on; see :mod:`tgagent.interfaces.autoreply`.
         self._watcher = watcher
+        #: Policy and model settings, changeable by the owner from a chat.
+        self._admin = admin
 
         self.confirmations = ChatConfirmation(self, timeout=confirmation_timeout)
 
@@ -650,6 +670,18 @@ class TelegramControlBridge:
             await self._reply(source, await self._stop_watches())
             return True
 
+        # Administration: policy, model settings, and flight mode. Handled by
+        # prefix rather than exact match because these take arguments, and by the
+        # bridge rather than a tool because a tool is reachable by content.
+        head, _, argument = source.instruction.strip().partition(" ")
+        head = head.casefold().rstrip(":,")
+        if head in _ADMIN_WORDS:
+            await self._administer(source, head, argument.strip())
+            return True
+        if head in _FLIGHT_WORDS:
+            await self._reply(source, await self._flight(argument.strip()))
+            return True
+
         if word in _STOP_WORDS:
             run = self._active.get(source.key)
             if run is None:
@@ -668,6 +700,8 @@ class TelegramControlBridge:
             body = _HELP_TEXT
             if self._watcher is not None and self._watcher.enabled:
                 body += _HELP_AUTOREPLY
+            if self._admin is not None and source.from_self:
+                body += _HELP_ADMIN
             await self._reply(source, (body + _HELP_FOOTER).format(trigger=self._settings.trigger))
             return True
 
@@ -914,6 +948,150 @@ class TelegramControlBridge:
                 await self._record_autoreply(source, watch, decision="error", error=str(exc))
         finally:
             self._active.pop(source.key, None)
+
+    # ------------------------------------------------------------ administer --
+    async def _administer(self, source: CommandSource, head: str, argument: str) -> None:
+        """Run a ``policy`` or ``llm`` command, owner-only.
+
+        The authorship check is stricter here than anywhere else in the bridge.
+        ``control.allowed_senders`` grants somebody the ability to spend your tokens
+        and act as your account; it does not extend to rewriting your permission
+        policy or pointing the model at an endpoint of their choosing. The second
+        one hands them every message the agent processes, and the two failures are
+        not comparable in size.
+        """
+        if self._admin is None:
+            await self._reply(
+                source,
+                "This listener was started without an administration surface, so I "
+                "cannot change settings from here.",
+            )
+            return
+        if not source.from_self:
+            log.warning(
+                "control.admin_refused", chat=source.chat_id, sender=source.sender_id, command=head
+            )
+            await self._reply(
+                source,
+                "Only the account owner can change the policy or the model, and this "
+                "message is not from them.",
+            )
+            return
+        # A policy or provider change mid-run would let a run observe its own rules
+        # changing underneath it, which the engine's design deliberately rules out.
+        if self._active:
+            await self._reply(
+                source,
+                f"Something is still running. Wait for it, or send "
+                f"`{self._settings.trigger} stop`, then try again.",
+            )
+            return
+
+        try:
+            result = (
+                self._admin.policy(argument)
+                if head in ("policy", "permissions")
+                else self._admin.llm(argument)
+            )
+        except TgAgentError as exc:
+            await self._reply(source, f"❌ {exc.user_message}")
+            return
+
+        # Deleting first: the reply is what draws the eye back to the chat, and a
+        # key should be gone before anybody looks. Best effort — a chat that
+        # refuses the deletion still gets the warning in the reply.
+        if result.contained_secret:
+            await self._delete_own(source)
+        await self._reply(source, result.message)
+        if result.changed:
+            await self._record(
+                source,
+                decision="allow",
+                error=None,
+                method=f"control.{head}",
+                risk=RiskTier.ACCOUNT_SECURITY,
+            )
+
+    async def _delete_own(self, source: CommandSource) -> None:
+        """Remove the operator's own command, when it carried a credential.
+
+        An API key pasted into a chat is in Telegram's history until somebody
+        removes it, and "somebody" should not have to be the person who was trying
+        to get on with something else.
+        """
+        client = self._manager.client
+        deleter = getattr(client, "delete_messages", None)
+        if deleter is None:
+            return
+        try:
+            # `message_ids` by keyword: Telethon accepts either, and the argument
+            # naming itself is what makes this unambiguous at the call site.
+            await deleter(source.destination, message_ids=[source.message_id], revoke=True)
+            log.info("control.secret_message_deleted", chat=source.chat_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the warning in the reply still stands
+            log.warning("control.secret_message_not_deleted", chat=source.chat_id, error=str(exc))
+
+    # ---------------------------------------------------------- flight mode ---
+    async def _flight(self, argument: str) -> str:
+        """``agent flight on [hours] [instruction]`` / ``agent flight off``.
+
+        One command for the situation the whole autoreply feature exists for: you
+        are about to be unreachable, you have thirty seconds, and you do not want
+        to explain per chat. It answers *private* chats only — replying for you in
+        a group is a different and much worse idea — and it is answered without the
+        model, because you are boarding.
+        """
+        watcher = self._watcher
+        trigger = self._settings.trigger
+        if watcher is None or not watcher.enabled or watcher.repository is None:
+            return (
+                "Automatic replies are switched off, so flight mode would do nothing. "
+                "Set `TGAGENT_AUTOREPLY__ENABLED=true` and restart the listener."
+            )
+
+        words = argument.split(maxsplit=1)
+        head = words[0].casefold() if words else ""
+        if head in ("off", "stop", "end", "land", "landed"):
+            stopped = await watcher.stop_flight_mode()
+            return (
+                "✈️ Flight mode off. I am not answering anyone for you."
+                if stopped
+                else "Flight mode was not on."
+            )
+        if head in ("", "status", "on", "start"):
+            if head in ("", "status"):
+                if (existing := await watcher.flight_mode()) is None:
+                    return (
+                        f"✈️ Flight mode is off.\n"
+                        f"`{trigger} flight on` · `{trigger} flight on 3` for three hours\n"
+                        f"`{trigger} flight on 3 tell them I'll answer when I land`"
+                    )
+                info = describe_watch(existing)
+                left = info["minutes_left"]
+                return (
+                    f"✈️ **Flight mode is on** — answering private chats as you.\n"
+                    f"· {info['replies_sent']}/{existing.max_replies} replies"
+                    + (f", {left} min left" if left is not None else "")
+                    + f"\n· “{existing.instruction[:200]}”\n\n"
+                    f"`{trigger} flight off` to stop."
+                )
+            argument = words[1] if len(words) > 1 else ""
+
+        hours, instruction = _split_hours(argument)
+        watch = await watcher.start_flight_mode(hours=hours, instruction=instruction)
+        info = describe_watch(watch)
+        return (
+            f"✈️ **Flight mode on.** I will answer private chats as you for "
+            f"{_duration((watch.expires_at - datetime.now(UTC)).total_seconds()) if watch.expires_at else 'a while'}"
+            f", up to {watch.max_replies} replies.\n"
+            f"· “{watch.instruction[:200]}”\n"
+            f"· groups and channels are left alone\n"
+            f"· nothing I send is marked as automatic"
+            + (f"\n· expires {info['expires_at']}" if info["expires_at"] else "")
+            + f"\n\n`{trigger} flight off` when you land · `{trigger} watches` to check."
+        )
 
     async def _render_watches(self) -> str:
         """The answer to ``agent watches``."""
@@ -1223,14 +1401,22 @@ class TelegramControlBridge:
                 with contextlib.suppress(Exception):
                     await entered.__aexit__(None, None, None)
 
-    async def _record(self, source: CommandSource, *, decision: str, error: str | None) -> None:
+    async def _record(
+        self,
+        source: CommandSource,
+        *,
+        decision: str,
+        error: str | None,
+        method: str = "control.command",
+        risk: RiskTier = RiskTier.READ_ONLY,
+    ) -> None:
         if self._audit is None:
             return
         entry = AuditEntry(
             run_id="control",
             conversation_id=self._conversations.get(source.key),
-            method="control.command",
-            risk=RiskTier.READ_ONLY.value,
+            method=method,
+            risk=risk.value,
             decision=decision,
             target=f"chat/{source.chat_id}",
             argument_digest=hashlib.sha256(source.instruction.encode()).hexdigest()[:16],
@@ -1340,6 +1526,28 @@ def _duration(seconds: float) -> str:
         return f"{minutes}m {remainder:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h {minutes:02d}m"
+
+
+def _split_hours(argument: str) -> tuple[float | None, str]:
+    """Read a leading duration off ``"3 tell them I'll answer later"``.
+
+    Accepts ``3``, ``3h``, ``90m``, or nothing at all; whatever follows is the
+    instruction. Typing a number first is what people do, so it is what this
+    understands.
+    """
+    words = argument.split(maxsplit=1)
+    if not words:
+        return None, ""
+    token = words[0].casefold()
+    rest = words[1].strip() if len(words) > 1 else ""
+    number, unit = (token[:-1], token[-1]) if token[-1:] in ("h", "m") else (token, "h")
+    try:
+        value = float(number)
+    except ValueError:
+        return None, argument.strip()
+    if value <= 0:
+        return None, rest
+    return (value / 60 if unit == "m" else value), rest
 
 
 def _delivery_lag(date: datetime | None) -> float | None:

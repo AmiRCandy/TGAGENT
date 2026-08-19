@@ -515,8 +515,16 @@ class _WatchRepo:
         return self._row_to_watch(row) if row else None
 
     async def for_chat(self, chat_id: int) -> ChatWatch | None:
+        """This chat's watch, or the catch-all one (flight mode) if it has none.
+
+        ``ORDER BY chat_id != 0`` puts the specific watch first, so an instruction
+        written for one person always beats the blanket one — which is the only
+        sensible precedence, and cheaper than two queries.
+        """
         row = await self._s.query_one(
-            "SELECT * FROM chat_watches WHERE chat_id = ? AND enabled = 1", (chat_id,)
+            "SELECT * FROM chat_watches WHERE chat_id IN (?, 0) AND enabled = 1 "
+            "ORDER BY chat_id = 0 LIMIT 1",
+            (chat_id,),
         )
         return self._row_to_watch(row) if row else None
 

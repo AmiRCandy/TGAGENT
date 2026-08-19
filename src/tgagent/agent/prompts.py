@@ -54,6 +54,42 @@ method and call it. The only real limits are the permission policy, which is \
 explicit and reported below, and whether Telegram itself can do the thing.\
 """
 
+_TOOL_CRAFT = """\
+# Using those three well
+
+The tiers are a ladder, and most wasted turns come from standing on the wrong rung.
+
+**Choose by the shape of the request, not by trying and failing.** One chat, one \
+page, one message: a curated tool. A sentence with "every", "all", "find each", or \
+a loop in it: `python`, first time. One specific operation the curated set does not \
+cover: search for the method, then call it.
+
+**The discovery loop, concretely.** When there is no tool for something — changing \
+the profile name, say — it takes two steps and no guessing:
+
+    telegram_api_search("update profile name")
+        → account.UpdateProfile(first_name?, last_name?, about?)
+    telegram_invoke("account.UpdateProfile", {"first_name": "Amir · 14:05"})
+
+Then read it back with `telegram_resolve_peer("me")` and report what it now says. \
+The same pair works for every one of the ~800 methods the curated tools omit, so \
+"there is no tool for that" is never where you stop.
+
+**Send several independent calls in one turn.** Reading three chats is one turn with \
+three calls, not three turns. Only chain them when a later call genuinely needs an \
+earlier result.
+
+**Resolve a peer once.** Keep the numeric id it returned and pass that from then on. \
+Re-resolving the same @username is a round trip that buys nothing.
+
+**Never repeat a call that just failed the same way.** A tool error is information: \
+read it, then change the arguments, the method, or the plan. Identical retries are \
+how a run burns its whole budget without moving.
+
+**Look at what came back before deciding the next step.** If a result was truncated \
+or hit a limit, say so in your answer rather than presenting it as complete.\
+"""
+
 _STANDING_WORK = """\
 # Standing and recurring work
 
@@ -187,7 +223,7 @@ def build_system_prompt(
     interactive: bool = True,
 ) -> str:
     """Assemble the system prompt for one run."""
-    sections: list[str] = [_ROLE, _CAPABILITIES, _STANDING_WORK, _LARGE_HISTORY]
+    sections: list[str] = [_ROLE, _CAPABILITIES, _TOOL_CRAFT, _STANDING_WORK, _LARGE_HISTORY]
     sections.append(_TRUST.format(sentinel=sentinel_tag()))
     sections.append(_PERMISSIONS)
 
@@ -234,6 +270,15 @@ def build_system_prompt(
     if account:
         identity = account.get("username") or account.get("first_name") or account.get("id")
         context_lines.append(f"- Operating the account: {identity} (id {account.get('id')})")
+    if settings.autoreply.enabled:
+        # Said here rather than in a tool description because the owner drives it
+        # with a chat command the model cannot call: it can only mention it, and it
+        # should, because for "I'm about to be unreachable" it is the better answer.
+        context_lines.append(
+            f"- The owner can also switch on flight mode themselves, which answers all "
+            f"their private chats until they land: `{settings.control.trigger} flight on 3`. "
+            f"Offer it when they are leaving rather than naming one person."
+        )
     if tool_names:
         context_lines.append(f"- Tools available: {', '.join(tool_names)}")
     sections.append("\n".join(context_lines))

@@ -240,6 +240,29 @@ asks. Deleting the task deletes the grant.
 See [scheduling](scheduling.md#granting-a-task-what-it-needs-from-the-chat) for
 the same thing from the operator's side.
 
+### Changing the policy from a chat
+
+`agent policy allow send_message` writes a *global* override — the same thing as
+editing `policy.yaml`, from the place you actually are:
+
+```
+you    agent policy add send_message
+bot    ✅ `send_message` → **allow** (risk: externally_visible)
+       In force now, and after a restart.
+       Runs with nobody attached can do this now.
+```
+
+It goes into `policy.chat.yaml` beside the database, applied *after* your own
+policy file, so your file keeps its comments and everything set remotely is in one
+place you can read or delete. The command is owner-only, is refused while a run is
+in flight, can tighten anything, and can loosen everything except the operations
+that can lock you out and the methods your own file denies by name. Full details
+in [Telegram control](telegram-control.md#changing-settings-from-a-chat).
+
+Which of the two to reach for: a **task grant** when one job needs one operation,
+because it stays scoped to that job; `agent policy` when you want the rule to hold
+everywhere, and are accepting that it holds for injected runs too.
+
 ## How it is wired
 
 ```mermaid

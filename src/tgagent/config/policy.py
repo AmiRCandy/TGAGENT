@@ -30,13 +30,16 @@ Example::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import yaml
 
 from tgagent.config.settings import PermissionSettings
 from tgagent.errors import PolicyError
+from tgagent.observability.logging import get_logger
 from tgagent.risk import PolicyDecision, RiskTier
+
+log = get_logger(__name__)
 
 _SCALAR_FIELDS = {
     "read_only_mode": bool,
@@ -126,15 +129,101 @@ def apply_policy(
     return PermissionSettings.model_validate(merged.model_dump())
 
 
-def resolve_permissions(settings_permissions: PermissionSettings) -> PermissionSettings:
-    """Apply ``policy_file`` if one is configured; otherwise pass through."""
-    path = settings_permissions.policy_file
-    if path is None:
-        return settings_permissions
-    path = Path(path).expanduser()
+#: Overrides written by ``agent policy …`` from a chat. A *separate* file from the
+#: operator's own policy, for three reasons: their file keeps its comments and its
+#: place in version control, everything granted from a phone is visible in one
+#: place, and revoking all of it is `rm`.
+CHAT_POLICY_NAME: Final = "policy.chat.yaml"
+
+_CHAT_POLICY_HEADER: Final = """\
+# Permission overrides written by `agent policy …` from a Telegram chat.
+#
+# Managed by tgagent — edits here are kept, but the header may be rewritten.
+# This file is applied *after* your own policy file, so it wins; it can only
+# contain method_overrides, and it cannot loosen a method your policy file denies
+# by name. Delete it to revoke everything granted remotely.
+"""
+
+
+def chat_policy_path(data_dir: Path) -> Path:
+    return Path(data_dir).expanduser() / CHAT_POLICY_NAME
+
+
+def load_chat_overrides(data_dir: Path) -> dict[str, PolicyDecision]:
+    """The chat-written overrides, or ``{}``.
+
+    A malformed file is a warning rather than a refusal to start: the operator's
+    own policy is the security baseline and is still in force, and a process that
+    will not boot is a worse outcome than a lost convenience.
+    """
+    path = chat_policy_path(data_dir)
     if not path.exists():
-        raise PolicyError(f"Configured policy file does not exist: {path}")
-    return apply_policy(settings_permissions, load_policy_file(path), source=str(path))
+        return {}
+    try:
+        data = load_policy_file(path)
+    except PolicyError as exc:
+        log.warning("policy.chat_overrides_unreadable", path=str(path), error=str(exc))
+        return {}
+
+    raw = data.get("method_overrides") or {}
+    if not isinstance(raw, dict):
+        log.warning("policy.chat_overrides_malformed", path=str(path))
+        return {}
+    resolved: dict[str, PolicyDecision] = {}
+    for method, decision in raw.items():
+        try:
+            resolved[str(method)] = _parse_decision(decision, str(path))
+        except PolicyError as exc:
+            log.warning("policy.chat_override_ignored", method=method, error=str(exc))
+    return resolved
+
+
+def save_chat_override(data_dir: Path, method: str, decision: PolicyDecision | None) -> Path:
+    """Write one override, or remove it when *decision* is ``None``."""
+    path = chat_policy_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = load_chat_overrides(data_dir)
+    if decision is None:
+        current.pop(method, None)
+    else:
+        current[method] = decision
+
+    body = {"method_overrides": {name: value.value for name, value in sorted(current.items())}}
+    try:
+        path.write_text(
+            _CHAT_POLICY_HEADER + yaml.safe_dump(body, sort_keys=True), encoding="utf-8"
+        )
+    except OSError as exc:
+        raise PolicyError(f"Cannot write {path}: {exc}") from exc
+    return path
+
+
+def resolve_permissions(
+    settings_permissions: PermissionSettings, *, data_dir: Path | None = None
+) -> PermissionSettings:
+    """Apply ``policy_file``, then any chat-written overrides.
+
+    The chat layer is applied last so that a change made from a phone takes
+    effect. It cannot loosen a method the operator's file denies *by name* —
+    that check lives in :mod:`tgagent.interfaces.admin`, at the point of writing,
+    where there is somebody to tell.
+    """
+    resolved = settings_permissions
+    path = settings_permissions.policy_file
+    if path is not None:
+        path = Path(path).expanduser()
+        if not path.exists():
+            raise PolicyError(f"Configured policy file does not exist: {path}")
+        resolved = apply_policy(resolved, load_policy_file(path), source=str(path))
+
+    if data_dir is not None and (chat := load_chat_overrides(data_dir)):
+        resolved = apply_policy(
+            resolved,
+            {"method_overrides": {m: d.value for m, d in chat.items()}},
+            source=str(chat_policy_path(data_dir)),
+        )
+        log.info("policy.chat_overrides_applied", count=len(chat))
+    return resolved
 
 
 def _parse_tier(name: Any, source: str) -> RiskTier:

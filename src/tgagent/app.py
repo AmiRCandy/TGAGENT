@@ -58,8 +58,13 @@ class Application:
     ) -> None:
         self.settings = settings or load_settings()
         # Policy is resolved once, at construction: a run must not be able to
-        # observe the policy changing halfway through.
-        self.settings.permissions = resolve_permissions(self.settings.permissions)
+        # observe the policy changing halfway through. The data directory is passed
+        # so that overrides written from a chat are picked up too; changing one
+        # while the process runs goes through RuntimeAdmin, which refuses while any
+        # run is in flight for exactly the reason above.
+        self.settings.permissions = resolve_permissions(
+            self.settings.permissions, data_dir=self.settings.data_dir
+        )
         self.settings.ensure_directories()
 
         configure_logging(self.settings.logging)
@@ -190,6 +195,27 @@ class Application:
             if key := self.settings.llm.api_key:
                 secret_registry.register(key.get_secret_value())
         return self._provider
+
+    def reload_llm(self) -> None:
+        """Drop the cached provider so the next run builds one from settings.
+
+        What makes ``agent llm model …`` real rather than cosmetic: the provider is
+        constructed once and cached, so without this the process would report the
+        new model and go on using the old one — a lie, and a confusing one.
+        """
+        provider, self._provider = self._provider, None
+        if provider is None:
+            return
+        # Closed in the background: this is called from a chat handler, and the
+        # old client's shutdown is not something the operator should wait for.
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(self._close_provider(provider))
+        log.info("app.llm_reloaded", model=self.settings.llm.model)
+
+    @staticmethod
+    async def _close_provider(provider: LLMProvider) -> None:
+        with contextlib.suppress(Exception):
+            await provider.aclose()
 
     @property
     def telegram(self) -> TelegramClientManager:

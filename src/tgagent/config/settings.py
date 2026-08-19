@@ -584,5 +584,12 @@ class Settings(BaseSettings):
 
 
 def load_settings(**overrides: Any) -> Settings:
-    """Build :class:`Settings` from the environment, applying explicit overrides."""
-    return Settings(**overrides)
+    """Build :class:`Settings` from the environment, applying explicit overrides.
+
+    The runtime-settable subset in :mod:`tgagent.config.local` is applied last, and
+    from the *resolved* data directory rather than a path fixed at import time —
+    which is what keeps a developer's real overrides file out of the test suite.
+    """
+    from tgagent.config.local import apply_local_overrides
+
+    return apply_local_overrides(Settings(**overrides))

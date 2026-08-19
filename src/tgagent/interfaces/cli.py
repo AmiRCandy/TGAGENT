@@ -27,6 +27,7 @@ from tgagent.agent.events import AgentEvent, EventKind
 from tgagent.app import Application
 from tgagent.config.settings import Settings, load_settings
 from tgagent.errors import TgAgentError
+from tgagent.interfaces.admin import RuntimeAdmin
 from tgagent.interfaces.autoreply import (
     STOPPED_BY_OPERATOR,
     AutoReplyWatcher,
@@ -83,6 +84,15 @@ def _build_watcher(application: Application, settings: Settings) -> AutoReplyWat
     if not settings.autoreply.enabled:
         return None
     return AutoReplyWatcher(application.storage.watches, settings.autoreply)
+
+
+def _build_admin(application: Application, settings: Settings) -> RuntimeAdmin:
+    """The policy and model surface the owner drives from a chat.
+
+    Given the live permission engine and settings, so a change takes effect in this
+    process rather than only in a file waiting for a restart.
+    """
+    return RuntimeAdmin(settings, application.permissions, on_llm_changed=application.reload_llm)
 
 
 def _run(coro: Any) -> Any:
@@ -404,6 +414,7 @@ def listen(
             confirmation_timeout=settings.permissions.confirmation_timeout,
             log_arguments=settings.logging.log_call_arguments,
             watcher=_build_watcher(application, settings),
+            admin=_build_admin(application, settings),
         )
         application.use_confirmations(bridge.confirmations)
 
@@ -473,6 +484,7 @@ def serve(
                 confirmation_timeout=settings.permissions.confirmation_timeout,
                 log_arguments=settings.logging.log_call_arguments,
                 watcher=_build_watcher(application, settings),
+                admin=_build_admin(application, settings),
             )
             application.use_confirmations(bridge.confirmations)
 

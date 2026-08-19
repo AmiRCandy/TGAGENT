@@ -174,7 +174,70 @@ Asking is allowed while a run is in progress — `ping` is answered before the
 | `agent reset` | start a fresh conversation for this chat |
 | `agent watches` | which chats are being answered for you — see [Answering for you](autoreply.md) |
 | `agent unwatch` | stop answering all of them, now, without the model |
+| `agent flight on 3` | answer my private chats for three hours |
+| `agent policy …` | what I am allowed to do, and change it — owner only |
+| `agent llm …` | which model I am using, and change it — owner only |
 | `agent help` | the list above, in the chat |
+
+Every one of them is answered by the bridge itself. None of them needs the model to
+be reachable, which is the point: the moments you most need to stop the account
+doing something, or to fix the model settings, are the moments the model is what
+went wrong.
+
+## Changing settings from a chat
+
+The terminal is where this is configured and the phone is where it is used, and
+those are not the same place when the deployment is on a VPS.
+
+```
+you    agent policy
+bot    **Permission policy**
+       · read_only: **allow**
+       · reversible: **allow**
+       · externally_visible: **confirm**
+       · destructive: **confirm**
+       · account_security: **deny**
+
+       Unattended runs: **deny**
+
+you    agent policy add send_message
+bot    ✅ `send_message` → **allow** (risk: externally_visible)
+       In force now, and after a restart.
+       Runs with nobody attached can do this now.
+       _Written to policy.chat.yaml; `agent policy remove send_message` undoes it._
+
+you    agent llm model claude-opus-5
+bot    ✅ model → `claude-opus-5`
+       In force from the next run.
+
+you    agent llm key sk-ant-…
+       (your message disappears)
+bot    ✅ api_key → sk-a…cdef (108 chars)
+       In force from the next run.
+       _I deleted your message so the key is not left in this chat._
+```
+
+`agent policy <method>` reports what would happen to one operation without
+changing anything, and `agent llm` on its own shows what is configured.
+
+### What that can and cannot do
+
+| | |
+| --- | --- |
+| **Owner only** | `control.allowed_senders` lets somebody spend your tokens and act as your account. It does not extend to rewriting your policy or choosing your model endpoint — the second one would hand them every message the agent processes. |
+| **Never a tool** | These are built-in words, parsed only from a message that already passed the authorship check. A tool could be reached by a model that read somebody's message; this cannot. |
+| **Not while a run is in flight** | Refused with "something is still running", because a run must not observe its own rules changing underneath it. |
+| **Tightening is unrestricted** | `agent policy deny <anything>` always works. It can only reduce what the account can do. |
+| **Loosening is bounded** | Not the operations that can lock you out — password, 2FA, sessions, log-out, username, account deletion — and not a method your own `policy.yaml` denies by name. Those need a terminal, and that friction is deliberate. |
+| **A tiny set of settings** | Only `llm.provider`, `llm.model`, `llm.api_key`, and `llm.base_url`. Nothing about permissions defaults, the sandbox, or the trust boundary is settable this way. |
+
+Changes are written next to the database, not into your own files:
+`policy.chat.yaml` for permissions and `settings.local.json` for model settings.
+Your hand-written `policy.yaml` keeps its comments and its place in version
+control; everything set from a phone is in one file you can read, diff, or delete
+to revoke. `settings.local.json` can hold an API key, so it is written
+owner-only and wins over the environment — `agent llm reset model` gives the
+environment back.
 
 Everything else is an instruction. `alive` and `status` are accepted as synonyms
 for `ping`, as are the usual synonyms for the others.

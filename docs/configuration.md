@@ -180,6 +180,23 @@ The security reasoning behind these defaults is in
 | `control.conversation_scope` | `chat` | `chat` \| `global` |
 | `control.max_commands_per_minute` | `6` | Loop breaker, not a UX limit |
 
+### Settings changed at runtime
+
+Four settings can be changed from a Telegram chat with `agent llm …` and are stored
+in `<data_dir>/settings.local.json`, which **wins over the environment** so that
+"I just changed it" is not silently ignored on a host with `TGAGENT_LLM__MODEL`
+exported:
+
+| Settable at runtime | |
+|---|---|
+| `llm.provider`, `llm.model`, `llm.api_key`, `llm.base_url` | `agent llm model …`, `agent llm key …`, `agent llm reset model` |
+
+The file is written owner-only because it can hold an API key. Nothing else is
+settable this way — not permissions, not the sandbox, not the trust boundary — and
+the list is a security boundary rather than a convenience. Permission changes have
+their own file and their own command; see
+[Telegram control](telegram-control.md#changing-settings-from-a-chat).
+
 ### `autoreply`
 
 Answering other people's messages as you. Off by default; read

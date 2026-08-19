@@ -37,6 +37,38 @@ bot    Answering @alex for the next 4 hours, up to 20 replies. I read your last
 The agent reads your recent history with that person first, so the instruction
 it stores describes how you actually write rather than how a model writes.
 
+## Flight mode
+
+Boarding in thirty seconds is the situation this whole feature exists for, and
+naming people one at a time is not what you want then:
+
+```
+you    agent flight on 3
+bot    ✈️ **Flight mode on.** I will answer private chats as you for 3h 00m,
+       up to 20 replies.
+       · "I am travelling and away from my phone. Reply briefly, in my voice…"
+       · groups and channels are left alone
+       · nothing I send is marked as automatic
+
+       `agent flight off` when you land · `agent watches` to check.
+```
+
+- `agent flight on` — the deployment's default lifetime
+- `agent flight on 3` / `agent flight on 90m` — a duration
+- `agent flight on 3 tell them I land at six` — a duration and your own instruction
+- `agent flight` — is it on, how many replies has it sent
+- `agent flight off` — landed
+
+It answers **private chats only**. Replying on your behalf in a group, where
+several people are talking and none of them addressed you, is a different and much
+worse idea, so a blanket watch never fires in one. A chat with its own instruction
+keeps it — the specific always beats the blanket — and the same expiry, reply
+budget, cooldown, and hourly ceiling apply, with the budget shared across every
+chat rather than per chat. That number is the one that matters when you cannot see
+what is being sent.
+
+Answered by the bridge without the model, because you are boarding.
+
 ## What stops it
 
 Every watch ends by itself. There is no way to create one that does not:

@@ -64,6 +64,23 @@ STOPPED_EXPIRED = "the time it was given ran out"
 STOPPED_EXHAUSTED = "it used up its reply budget"
 STOPPED_BY_OPERATOR = "stopped by the operator"
 
+#: A watch on this chat id answers any *private* chat that has no watch of its
+#: own — flight mode. Sentinel rather than a column because it is the same record
+#: with the same limits and the same kill switch; a second mechanism would be a
+#: second thing to get wrong.
+ANY_PRIVATE_CHAT = 0
+
+#: What flight mode says when the operator does not say. Written to be safe when
+#: it is wrong: it commits to nothing, and it tells the truth about being away.
+FLIGHT_INSTRUCTION = (
+    "I am travelling and away from my phone. Reply briefly, in my voice — read my "
+    "own recent messages in the chat to see how I write to this person. Acknowledge "
+    "what they said, tell them I will get back to them properly when I land, and "
+    "commit to nothing: no times, no money, no promises, no decisions. If the "
+    "message needs me specifically, or is about anything sensitive, say I will "
+    "answer when I am back rather than attempting it yourself."
+)
+
 
 @dataclass(slots=True, frozen=True)
 class IncomingMessage:
@@ -138,6 +155,11 @@ class AutoReplyWatcher:
         watch = await self._watches.for_chat(incoming.chat_id)
         if watch is None:
             return None
+        # Flight mode covers whatever has no watch of its own, and only one-to-one
+        # conversations: answering for somebody in a group, where several people are
+        # talking and none of them addressed you, is a different and much worse idea.
+        if watch.chat_id == ANY_PRIVATE_CHAT and incoming.chat_kind != "private chat":
+            return None
 
         now = now or datetime.now(UTC)
         if watch.expired(now):
@@ -149,6 +171,51 @@ class AutoReplyWatcher:
         if not watch.matches_sender(incoming.sender_id):
             return None
         return watch
+
+    # --------------------------------------------------------- flight mode ----
+    async def flight_mode(self) -> ChatWatch | None:
+        """The flight-mode watch, if one is running."""
+        if self._watches is None:
+            return None
+        return await self._watches.for_chat(ANY_PRIVATE_CHAT)
+
+    async def start_flight_mode(
+        self, *, hours: float | None = None, instruction: str = ""
+    ) -> ChatWatch:
+        """Answer every private chat, briefly, as the owner.
+
+        Bounded exactly like any other watch — an expiry and a reply budget — and
+        the budget is shared across all chats rather than per chat, because "twenty
+        replies to twenty different people" is the number that matters when you
+        cannot see what is being sent.
+        """
+        if self._watches is None:  # pragma: no cover - guarded by the caller
+            raise RuntimeError("Automatic replies are not available.")
+        minutes = int(hours * 60) if hours else self._settings.default_ttl_minutes
+        watch = ChatWatch(
+            chat_id=ANY_PRIVATE_CHAT,
+            chat_title="every private chat",
+            instruction=(instruction.strip() or FLIGHT_INSTRUCTION),
+            expires_at=ttl_for(self._settings, minutes, now=datetime.now(UTC)),
+            max_replies=self._settings.max_replies_per_watch,
+            metadata={"created_by": "flight mode", "conversation_scope": "per chat"},
+        )
+        await self._watches.create(watch)
+        log.warning(
+            "autoreply.flight_mode_on",
+            expires_at=watch.expires_at.isoformat() if watch.expires_at else None,
+            max_replies=watch.max_replies,
+        )
+        return watch
+
+    async def stop_flight_mode(self) -> bool:
+        """Turn it off. True if it was on."""
+        watch = await self.flight_mode()
+        if watch is None:
+            return False
+        await self.retire(watch, STOPPED_BY_OPERATOR)
+        log.warning("autoreply.flight_mode_off", replies=watch.reply_count)
+        return True
 
     def refuse(self, watch: ChatWatch, *, now: datetime | None = None) -> str | None:
         """Why this reply should not be sent *right now*, or ``None`` to go ahead.
