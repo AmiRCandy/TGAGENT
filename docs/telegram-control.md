@@ -177,7 +177,14 @@ Asking is allowed while a run is in progress — `ping` is answered before the
 | `agent flight on 3` | answer my private chats for three hours |
 | `agent policy …` | what I am allowed to do, and change it — owner only |
 | `agent llm …` | which model I am using, and change it — owner only |
-| `agent help` | the list above, in the chat |
+| `agent help` | the whole surface, with an example of each part |
+| `agent help policy` | one topic in depth — also `llm`, `flight`, `tasks`, `ping`, `confirm` |
+
+`agent help` is written to be the only documentation most people ever read: it
+leads with examples rather than command names, offers only the parts this
+deployment has switched on, shows the owner-only commands only to the owner, and
+fits in a single Telegram message. `agent help <topic>` is the page for when you
+know what you want and need the exact spelling or the limits.
 
 Every one of them is answered by the bridge itself. None of them needs the model to
 be reachable, which is the point: the moments you most need to stop the account

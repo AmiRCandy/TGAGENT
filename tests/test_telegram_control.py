@@ -495,7 +495,9 @@ class TestBuiltIns:
         await settle()
 
         assert runtime.prompts == []
-        assert "instruction" in manager.client.sent[0]["message"]
+        # Examples rather than a list of command names — see tests/test_admin.py
+        # for what the page is required to contain.
+        assert "agent what did I miss" in manager.client.sent[0]["message"]
 
     async def test_one_run_at_a_time_per_chat(self, manager: FakeClientManager) -> None:
         runtime = StubRuntime(hang=True)

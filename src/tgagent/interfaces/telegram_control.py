@@ -84,6 +84,7 @@ from tgagent.interfaces.autoreply import (
     IncomingMessage,
     describe_watch,
 )
+from tgagent.interfaces.help_text import build_help
 from tgagent.observability.logging import get_logger
 from tgagent.risk import RiskTier
 from tgagent.security.confirm import (
@@ -127,31 +128,6 @@ _PULSE = ("⏳", "⌛")
 
 #: Characters that may stand in for the space after the trigger word.
 _SEPARATORS = ":,-\u2013\u2014"
-
-_HELP_TEXT = (
-    "**tgagent**\n"
-    "`{trigger} <instruction>` — run an instruction with this chat as context\n"
-    "`{trigger} ping` — check the bridge is alive, and how fast\n"
-    "`{trigger} stop` — cancel the run in progress here\n"
-    "`{trigger} reset` — start a fresh conversation for this chat\n"
-    "`{trigger} help` — this message\n"
-)
-
-#: Appended to the help only where automatic replies are switched on.
-_HELP_AUTOREPLY = (
-    "`{trigger} flight on 3` — answer my private chats for three hours\n"
-    "`{trigger} flight off` — landed; stop\n"
-    "`{trigger} watches` — which chats are being answered for you\n"
-    "`{trigger} unwatch` — stop answering all of them, now\n"
-)
-
-#: Appended for the account owner only, because only they can use it.
-_HELP_ADMIN = (
-    "`{trigger} policy` — what I am allowed to do, and change it\n"
-    "`{trigger} llm` — which model I am using, and change it\n"
-)
-
-_HELP_FOOTER = "\nReply to a message and the replied-to text is included as context."
 
 
 # ----------------------------------------------------------------- parsing ----
@@ -670,16 +646,24 @@ class TelegramControlBridge:
             await self._reply(source, await self._stop_watches())
             return True
 
-        # Administration: policy, model settings, and flight mode. Handled by
-        # prefix rather than exact match because these take arguments, and by the
-        # bridge rather than a tool because a tool is reachable by content.
+        # Administration, help, and flight mode. Handled by prefix rather than
+        # exact match because these take arguments, and by the bridge rather than a
+        # tool because a tool is reachable by content.
         head, _, argument = source.instruction.strip().partition(" ")
-        head = head.casefold().rstrip(":,")
+        head = head.casefold().strip(".!,:")
+        # "?" is a help word in its own right, so stripping must not empty it.
+        head = head.rstrip("?") or head
+        argument = argument.strip()
+
+        if head in _HELP_WORDS:
+            await self._reply(source, self._help(source, argument))
+            return True
+
         if head in _ADMIN_WORDS:
-            await self._administer(source, head, argument.strip())
+            await self._administer(source, head, argument)
             return True
         if head in _FLIGHT_WORDS:
-            await self._reply(source, await self._flight(argument.strip()))
+            await self._reply(source, await self._flight(argument))
             return True
 
         if word in _STOP_WORDS:
@@ -694,15 +678,6 @@ class TelegramControlBridge:
         if word in _RESET_WORDS:
             self._reset_conversation(source)
             await self._reply(source, "Started a fresh conversation for this chat.")
-            return True
-
-        if word in _HELP_WORDS:
-            body = _HELP_TEXT
-            if self._watcher is not None and self._watcher.enabled:
-                body += _HELP_AUTOREPLY
-            if self._admin is not None and source.from_self:
-                body += _HELP_ADMIN
-            await self._reply(source, (body + _HELP_FOOTER).format(trigger=self._settings.trigger))
             return True
 
         if source.key in self._active:
@@ -948,6 +923,21 @@ class TelegramControlBridge:
                 await self._record_autoreply(source, watch, decision="error", error=str(exc))
         finally:
             self._active.pop(source.key, None)
+
+    # ------------------------------------------------------------------ help --
+    def _help(self, source: CommandSource, topic: str) -> str:
+        """``agent help``, and ``agent help <topic>`` for one page in depth.
+
+        What it offers depends on who is asking and what this deployment has
+        switched on: pointing somebody at a command that will refuse them is worse
+        than not mentioning it.
+        """
+        return build_help(
+            self._settings.trigger,
+            autoreply=bool(self._watcher and self._watcher.enabled),
+            admin=self._admin is not None and source.from_self,
+            topic=topic,
+        )
 
     # ------------------------------------------------------------ administer --
     async def _administer(self, source: CommandSource, head: str, argument: str) -> None:

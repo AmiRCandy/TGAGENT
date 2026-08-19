@@ -318,6 +318,99 @@ class TestOnlyTheOwner:
         assert runtime.prompts == []
 
 
+# ------------------------------------------------------------------ help ------
+class TestHelp:
+    """`agent help` is the only documentation most people will ever read."""
+
+    async def test_it_leads_with_examples_not_command_names(
+        self, manager: FakeClientManager, admin: RuntimeAdmin
+    ) -> None:
+        bridge = make_bridge(manager, admin)
+        await bridge.handle_event(FakeControlEvent("agent help", out=True))
+
+        answer = sent(manager)[0]
+        assert "agent what did I miss here today?" in answer
+        assert "agent every morning at 8" in answer
+        assert "agent ping" in answer
+
+    async def test_it_uses_the_configured_trigger(self, manager: FakeClientManager) -> None:
+        """A help page telling you to type a word that does nothing is worse than none."""
+        bridge = TelegramControlBridge(
+            manager,
+            lambda: QuietRuntime(),
+            TelegramControlSettings(trigger="jarvis", progress_updates=False),
+            me_id=OWNER_ID,
+        )
+        await bridge.handle_event(FakeControlEvent("jarvis help", out=True))
+        answer = sent(manager)[0]
+        assert "jarvis ping" in answer
+        assert "agent ping" not in answer
+
+    async def test_every_page_fits_one_message(self, admin_settings: Settings) -> None:
+        """Splitting a help page across two notifications is a small thing done badly."""
+        limit = TelegramControlSettings().max_reply_chars
+        from tgagent.interfaces.help_text import build_help
+
+        pages = ["", "policy", "llm", "flight", "tasks", "ping", "confirm", "nonsense"]
+        for topic in pages:
+            page = build_help("agent", autoreply=True, admin=True, topic=topic)
+            assert 0 < len(page) <= limit, (topic, len(page))
+
+    async def test_a_topic_gives_the_detail(
+        self, manager: FakeClientManager, admin: RuntimeAdmin
+    ) -> None:
+        bridge = make_bridge(manager, admin)
+        await bridge.handle_event(FakeControlEvent("agent help policy", out=True))
+        assert "policy.chat.yaml" in sent(manager)[0]
+
+    async def test_an_unknown_topic_is_not_a_dead_end(
+        self, manager: FakeClientManager, admin: RuntimeAdmin
+    ) -> None:
+        bridge = make_bridge(manager, admin)
+        await bridge.handle_event(FakeControlEvent("agent help wibble", out=True))
+
+        answer = sent(manager)[0]
+        assert "no help page" in answer
+        assert "agent what did I miss" in answer  # the overview follows
+
+    async def test_it_offers_nothing_that_would_refuse_the_reader(
+        self, manager: FakeClientManager, admin: RuntimeAdmin
+    ) -> None:
+        """A stranger is not shown the owner-only commands."""
+        bridge = make_bridge(manager, admin)
+        event = FakeControlEvent(
+            "agent help",
+            sender_id=STRANGER_ID,
+            out=False,
+            sender=FakeEntity(STRANGER_ID, username="mallory"),
+        )
+        source = await bridge._describe(event, event.chat_id, event.id, "help")
+        answer = bridge._help(source, "")
+
+        # The commands, not the word: "policy" appears in ordinary prose about what
+        # a scheduled task is allowed to do, and should.
+        assert "agent policy" not in answer
+        assert "agent llm" not in answer
+
+    async def test_features_that_are_off_are_not_advertised(
+        self, manager: FakeClientManager
+    ) -> None:
+        bridge = make_bridge(manager, None, watcher=None)
+        await bridge.handle_event(FakeControlEvent("agent help", out=True))
+
+        answer = sent(manager)[0]
+        assert "flight" not in answer
+        assert "unwatch" not in answer
+
+    @pytest.mark.parametrize("text", ["agent help", "agent ?", "agent usage", "agent help?"])
+    async def test_the_ways_people_ask(
+        self, manager: FakeClientManager, admin: RuntimeAdmin, text: str
+    ) -> None:
+        bridge = make_bridge(manager, admin)
+        assert await bridge.handle_event(FakeControlEvent(text, out=True))
+        assert "tgagent" in sent(manager)[-1]
+
+
 # ------------------------------------------------------------ flight mode -----
 class TestFlightMode:
     def _watcher(self, storage: SQLiteStorage) -> AutoReplyWatcher:
