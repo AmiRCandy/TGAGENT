@@ -125,6 +125,9 @@ ignore = [
 "tests/**" = ["S", "T20", "PTH", "ASYNC", "SLF"]
 "src/tgagent/interfaces/cli.py" = ["T20"]
 "src/tgagent/sandbox/worker.py" = ["T20"]  # the worker speaks JSON-lines on stdout
+# The container entrypoint runs before the application (and its logging) exists,
+# so stderr is the only channel it has.
+"docker/entrypoint.py" = ["T20"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "parents"

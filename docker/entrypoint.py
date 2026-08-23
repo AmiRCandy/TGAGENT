@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import grp
 import os
 import pwd
 import stat
@@ -84,7 +83,7 @@ def take_ownership(path: Path, uid: int, gid: int) -> None:
 
     os.chown(path, uid, gid)
     # 0700: the directory holds the session file, which is a live credential.
-    os.chmod(path, stat.S_IRWXU)
+    path.chmod(stat.S_IRWXU)
 
     if already_ours:
         return
