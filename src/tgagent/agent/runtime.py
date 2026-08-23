@@ -84,6 +84,8 @@ class RuntimeDependencies:
     #: Only used by tools that must get the owner's decision *now* for work that
     #: will run later; per-call authorisation stays inside the gateway.
     confirmations: Any = None
+    #: Callable, because the scheduler starts after the runtime is wired.
+    scheduler_running: Any = None
     account: dict[str, Any] | None = None
 
 
@@ -192,6 +194,7 @@ class AgentRuntime:
             watches=self._deps.watches,
             permissions=self._deps.permissions,
             confirmations=self._deps.confirmations,
+            scheduler_running=bool(self._deps.scheduler_running and self._deps.scheduler_running()),
             cancelled=cancel,
         )
 

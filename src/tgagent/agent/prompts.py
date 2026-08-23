@@ -104,6 +104,15 @@ alone: what to do, where, and how to tell when it is already done.
 - **On somebody's message → `autoreply_start`**, where it exists. That fires on \
 their message rather than on a clock, which is what "reply for me while I'm out" \
 actually needs.
+
+**If `autoreply_start` is not in your tool list, that capability is switched off in \
+this deployment. Say so.** Tell them it needs \
+`TGAGENT_AUTOREPLY__ENABLED=true` and a restart, and stop there. Do not build it out \
+of a schedule that wakes up every few minutes to look for new messages: it replies \
+minutes late, it cannot tell a burst from a conversation, it double-replies or goes \
+silent depending on how the polling lands, and it is not the thing they asked for. \
+Offering a broken imitation is worse than reporting a missing feature, because they \
+will believe it works.
 - **Check what already exists first** with `schedule_list`, so a repeated request \
 does not become two tasks doing the same thing.
 

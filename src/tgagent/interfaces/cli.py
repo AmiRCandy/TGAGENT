@@ -385,8 +385,13 @@ def listen(
         str | None, typer.Option("--trigger", help="Override the trigger word.")
     ] = None,
     scheduler: Annotated[
-        bool, typer.Option("--scheduler", help="Also run scheduled tasks.")
-    ] = False,
+        bool,
+        typer.Option(
+            "--scheduler/--no-scheduler",
+            help="Also run scheduled tasks. On by default: a listener that accepts "
+            '"every morning at 8" and then never runs it is a trap.',
+        ),
+    ] = True,
 ) -> None:
     """Take instructions from your Telegram chats instead of this terminal.
 
@@ -415,6 +420,10 @@ def listen(
             log_arguments=settings.logging.log_call_arguments,
             watcher=_build_watcher(application, settings),
             admin=_build_admin(application, settings),
+            tasks=application.storage.tasks,
+            scheduler_running=lambda: (
+                application.scheduler is not None and application.scheduler.running
+            ),
         )
         application.use_confirmations(bridge.confirmations)
 
@@ -422,6 +431,7 @@ def listen(
             await application.start(connect_telegram=True, start_scheduler=scheduler)
             await bridge.start()
             account = application.account or {}
+            enabled_tasks = len(await application.storage.tasks.list_all(enabled_only=True))
             console.print(
                 Panel(
                     f"Listening as {account.get('username') or account.get('id')}.\n"
@@ -443,6 +453,13 @@ def listen(
                         f"{settings.control.trigger} unwatch[/dim]"
                         if settings.autoreply.enabled
                         else ""
+                    )
+                    + (
+                        f"\n\n[green]Scheduler running[/green] — {enabled_tasks} enabled "
+                        f"task(s) will fire on time."
+                        if application.scheduler is not None and application.scheduler.running
+                        else "\n\n[yellow]Scheduler is OFF[/yellow] — anything scheduled from a "
+                        "chat is saved but never runs. Drop --no-scheduler to change that."
                     )
                     + "\nPress Ctrl-C to stop.",
                     title="Telegram control",
@@ -485,6 +502,10 @@ def serve(
                 log_arguments=settings.logging.log_call_arguments,
                 watcher=_build_watcher(application, settings),
                 admin=_build_admin(application, settings),
+                tasks=application.storage.tasks,
+                scheduler_running=lambda: (
+                    application.scheduler is not None and application.scheduler.running
+                ),
             )
             application.use_confirmations(bridge.confirmations)
 

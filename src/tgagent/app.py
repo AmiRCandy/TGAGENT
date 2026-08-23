@@ -248,6 +248,7 @@ class Application:
                 conversations=self.storage.conversations,
                 permissions=self.permissions,
                 confirmations=self.confirmations,
+                scheduler_running=lambda: self.scheduler is not None and self.scheduler.running,
                 account=self.account,
             ),
         )

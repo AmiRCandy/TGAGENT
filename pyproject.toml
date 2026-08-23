@@ -68,10 +68,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tgagent/tgagent"
-Documentation = "https://github.com/tgagent/tgagent/tree/main/docs"
-Source = "https://github.com/tgagent/tgagent"
-Issues = "https://github.com/tgagent/tgagent/issues"
+Homepage = "https://github.com/AmiRCandy/tgagent"
+Documentation = "https://github.com/AmiRCandy/tgagent/tree/main/docs"
+Source = "https://github.com/AmiRCandy/tgagent"
+Issues = "https://github.com/AmiRCandy/tgagent/issues"
 
 [project.scripts]
 tgagent = "tgagent.interfaces.cli:main"

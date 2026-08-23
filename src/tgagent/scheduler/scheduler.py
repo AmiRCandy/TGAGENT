@@ -56,6 +56,16 @@ class Scheduler:
     def active(self) -> int:
         return len(self._running)
 
+    @property
+    def running(self) -> bool:
+        """Whether the tick loop is actually alive.
+
+        Asked by anything that reports "is my scheduled work going to happen?" —
+        a question that used to be unanswerable from inside the process, which is
+        how a task could sit enabled and due for hours without firing.
+        """
+        return self._loop_task is not None and not self._loop_task.done()
+
     # ------------------------------------------------------------ lifecycle --
     async def start(self) -> None:
         if not self._settings.enabled:

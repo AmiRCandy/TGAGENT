@@ -110,6 +110,20 @@ class ScheduleCreateTool:
 
         payload: dict[str, Any] = {}
         notes: list[str] = []
+        if not context.scheduler_running:
+            # The failure this exists to stop: a task is saved, the operator is
+            # told it is set up, and nothing ever fires because the process
+            # listening for commands is not the process that runs tasks. Saying it
+            # here is the only moment anyone finds out cheaply.
+            payload["nothing_will_run_it"] = (
+                "No scheduler is running in this process, so this task will never "
+                "fire. It has to be started with `tgagent listen` (which runs one by "
+                "default) or `tgagent serve`."
+            )
+            notes.append(
+                "Lead with nothing_will_run_it: the task is saved but dead until a "
+                "scheduler runs. Do not describe it as working."
+            )
         if blocked := unattended_blockers(context, arguments.get("needs")):
             granted_now, refused = await _seek_grants(task, blocked, context)
             if granted_now:

@@ -93,7 +93,7 @@ from tgagent.security.confirm import (
     ConfirmationRequest,
 )
 from tgagent.security.trust import UntrustedContent, wrap_untrusted
-from tgagent.storage.base import AuditRepository
+from tgagent.storage.base import AuditRepository, TaskRepository
 from tgagent.storage.models import AuditEntry, ChatWatch
 
 log = get_logger(__name__)
@@ -495,6 +495,8 @@ class TelegramControlBridge:
         log_arguments: bool = False,
         watcher: AutoReplyWatcher | None = None,
         admin: RuntimeAdmin | None = None,
+        tasks: TaskRepository | None = None,
+        scheduler_running: Callable[[], bool] | None = None,
     ) -> None:
         self._manager = manager
         self._runtime_factory = runtime_factory
@@ -507,6 +509,14 @@ class TelegramControlBridge:
         self._watcher = watcher
         #: Policy and model settings, changeable by the owner from a chat.
         self._admin = admin
+        #: Scheduled work, for reporting it. "Is my recurring thing actually going
+        #: to happen?" was unanswerable from a chat, which is how a task can sit
+        #: enabled and overdue for hours while `ping` cheerfully says everything is
+        #: fine — it counts chat runs, and a scheduled run is not one.
+        self._tasks = tasks
+        #: Asked at report time, not captured at construction: the scheduler does
+        #: not exist until the application starts, which is after this is built.
+        self._scheduler_running = scheduler_running
 
         self.confirmations = ChatConfirmation(self, timeout=confirmation_timeout)
 
@@ -1298,6 +1308,7 @@ class TelegramControlBridge:
             f"runs in flight: `{len(self._active)}` · commands this minute: "
             f"`{len(self._accepted)}/{self._settings.max_commands_per_minute}`"
         )
+        lines.append(await self._scheduler_line())
         text = "\n".join(lines)
 
         log.info(
@@ -1309,6 +1320,39 @@ class TelegramControlBridge:
         )
         if not (ids and await self._edit(source, ids[0], text)):
             await self._reply(source, text)
+
+    async def _scheduler_line(self) -> str:
+        """Whether scheduled work will actually happen, in one line.
+
+        `ping` used to report only chat runs, so a listener started without a
+        scheduler looked perfectly healthy while every recurring task it had been
+        asked to set up sat there and never fired. That is the failure this line
+        exists to make impossible to miss.
+        """
+        if self._tasks is None:
+            return "scheduled tasks: `not wired up`"
+        try:
+            tasks = await self._tasks.list_all(enabled_only=True)
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must not fail
+            return f"scheduled tasks: `unreadable ({exc})`"
+
+        running = self._scheduler_running is not None and self._scheduler_running()
+        if not tasks:
+            state = "scheduler: `running`" if running else "scheduler: `off`"
+            return f"{state} · no enabled tasks"
+        if not running:
+            return (
+                f"⚠️ **{len(tasks)} enabled task(s), but the scheduler is OFF** — none of "
+                f"them will run. Restart the listener without `--no-scheduler`."
+            )
+
+        due = [task.next_run_at for task in tasks if task.next_run_at is not None]
+        soonest = min(due) if due else None
+        when = "unknown"
+        if soonest is not None:
+            seconds = (soonest - datetime.now(UTC)).total_seconds()
+            when = f"in {_duration(seconds)}" if seconds > 0 else "now (overdue)"
+        return f"scheduler: `running` · {len(tasks)} task(s) · next {when}"
 
     # --------------------------------------------------------------- io ------
     async def _reply(self, source: CommandSource, text: str) -> None:

@@ -1,13 +1,13 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/tgagent/tgagent/security/advisories/new
+    url: https://github.com/AmiRCandy/tgagent/security/advisories/new
     about: >
       Report privately. Never in a public issue — this project handles live
       Telegram credentials.
   - name: Documentation
-    url: https://github.com/tgagent/tgagent/tree/main/docs
+    url: https://github.com/AmiRCandy/tgagent/tree/main/docs
     about: Setup, architecture, the security model, and troubleshooting.
   - name: Questions and ideas
-    url: https://github.com/tgagent/tgagent/discussions
+    url: https://github.com/AmiRCandy/tgagent/discussions
     about: For anything that is not a concrete bug or feature request.

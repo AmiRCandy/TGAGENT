@@ -67,6 +67,10 @@ class ToolContext:
     #: gateway's. Only one thing needs this: work being scheduled for later has to
     #: be authorised now, while somebody is still here to authorise it.
     confirmations: ConfirmationProvider | None = None
+    #: Whether a scheduler is actually ticking in this process. False means a task
+    #: can be saved but will never fire, which is worth saying out loud at the
+    #: moment somebody asks for one rather than never.
+    scheduler_running: bool = False
 
     #: Set when the user cancels; long-running tools should check it.
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)

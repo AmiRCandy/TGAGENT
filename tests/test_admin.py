@@ -28,7 +28,9 @@ from tgagent.interfaces.autoreply import ANY_PRIVATE_CHAT, AutoReplyWatcher, Inc
 from tgagent.interfaces.telegram_control import TelegramControlBridge
 from tgagent.risk import PolicyDecision, RiskTier
 from tgagent.security.permissions import PermissionEngine
+from tgagent.storage.models import ScheduledTask, ScheduleKind
 from tgagent.storage.sqlite import SQLiteStorage
+from tgagent.tools.base import ToolContext
 
 OWNER_ID = 1
 STRANGER_ID = 77
@@ -87,6 +89,20 @@ def make_bridge(
 
 def sent(manager: FakeClientManager) -> list[str]:
     return [entry["message"] for entry in manager.client.sent]
+
+
+def said(manager: FakeClientManager) -> str:
+    """Everything the bridge put in the chat, sent or edited in.
+
+    `ping` acknowledges with a placeholder and edits the numbers into it — that is
+    how it measures the round trip — so a helper that only reads sends sees "🏓 …"
+    and nothing else.
+    """
+    parts = [entry["message"] for entry in manager.client.sent]
+    parts += [
+        str(args.get("text", "")) for name, args in manager.client.calls if name == "edit_message"
+    ]
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------- policy ------
@@ -547,3 +563,136 @@ class TestFlightMode:
         bridge = make_bridge(manager, None, watcher=None)
         await bridge.handle_event(FakeControlEvent("agent flight on", out=True))
         assert "TGAGENT_AUTOREPLY__ENABLED" in sent(manager)[0]
+
+
+# ---------------------------------------------------- is it actually running ---
+class TestSchedulerVisibility:
+    """The failure that started this: a task saved, and nothing to run it.
+
+    A listener without a scheduler accepts "every five minutes", stores it, says it
+    is set up, and never fires. `ping` reported "0 runs in flight" — true, and
+    useless, because a scheduled run was never a chat run.
+    """
+
+    class _FakeScheduler:
+        def __init__(self, *, running: bool) -> None:
+            self.running = running
+
+    def _bridge(
+        self,
+        manager: FakeClientManager,
+        storage: SQLiteStorage,
+        *,
+        scheduler_running: bool | None,
+    ) -> TelegramControlBridge:
+        return TelegramControlBridge(
+            manager,
+            lambda: QuietRuntime(),
+            TelegramControlSettings(progress_updates=False),
+            me_id=OWNER_ID,
+            tasks=storage.tasks,
+            scheduler_running=(None if scheduler_running is None else (lambda: scheduler_running)),
+        )
+
+    async def _task(self, storage: SQLiteStorage, **overrides: Any) -> ScheduledTask:
+        from datetime import UTC, datetime, timedelta
+
+        task = ScheduledTask(
+            name=overrides.pop("name", "flight-autoreply-sina"),
+            prompt="Reply to Sina if his message is the newest.",
+            kind=ScheduleKind.INTERVAL,
+            expression="300",
+            **{"next_run_at": datetime.now(UTC) + timedelta(minutes=4), **overrides},
+        )
+        await storage.tasks.create(task)
+        return task
+
+    async def test_ping_says_when_nothing_will_run_a_task(
+        self, manager: FakeClientManager, storage: SQLiteStorage
+    ) -> None:
+        await self._task(storage)
+        bridge = self._bridge(manager, storage, scheduler_running=False)
+
+        await bridge.handle_event(FakeControlEvent("agent ping", out=True))
+        answer = said(manager)
+
+        assert "scheduler is OFF" in answer
+        assert "1 enabled task" in answer
+
+    async def test_ping_reports_a_healthy_scheduler_and_the_next_run(
+        self, manager: FakeClientManager, storage: SQLiteStorage
+    ) -> None:
+        await self._task(storage)
+        bridge = self._bridge(manager, storage, scheduler_running=True)
+
+        await bridge.handle_event(FakeControlEvent("agent ping", out=True))
+        answer = said(manager)
+
+        assert "scheduler: `running`" in answer
+        assert "next in" in answer
+
+    async def test_ping_flags_an_overdue_task(
+        self, manager: FakeClientManager, storage: SQLiteStorage
+    ) -> None:
+        """A scheduler that is up but not firing is a different bug, and visible."""
+        from datetime import UTC, datetime, timedelta
+
+        await self._task(storage, next_run_at=datetime.now(UTC) - timedelta(minutes=20))
+        bridge = self._bridge(manager, storage, scheduler_running=True)
+
+        await bridge.handle_event(FakeControlEvent("agent ping", out=True))
+        assert "overdue" in said(manager)
+
+    async def test_ping_still_works_with_no_tasks_wired(
+        self, manager: FakeClientManager, storage: SQLiteStorage
+    ) -> None:
+        bridge = self._bridge(manager, storage, scheduler_running=None)
+        await bridge.handle_event(FakeControlEvent("agent ping", out=True))
+        assert "pong" in said(manager)
+
+    async def test_creating_a_task_says_so_when_nothing_will_run_it(
+        self, admin_settings: Settings, storage: SQLiteStorage
+    ) -> None:
+        from tgagent.tools.schedule_tools import ScheduleCreateTool
+
+        context = ToolContext(
+            run_id="r",
+            settings=admin_settings,
+            tasks=storage.tasks,
+            permissions=PermissionEngine(admin_settings.permissions),
+            scheduler_running=False,
+        )
+        result = await ScheduleCreateTool().run(
+            {
+                "name": "every-five",
+                "prompt": "Check for new messages from Sina.",
+                "kind": "interval",
+                "expression": "300",
+            },
+            context,
+        )
+        assert "nothing_will_run_it" in result.content
+        assert "never" in result.content
+
+    async def test_a_task_created_where_one_will_run_says_nothing_of_the_sort(
+        self, admin_settings: Settings, storage: SQLiteStorage
+    ) -> None:
+        from tgagent.tools.schedule_tools import ScheduleCreateTool
+
+        context = ToolContext(
+            run_id="r",
+            settings=admin_settings,
+            tasks=storage.tasks,
+            permissions=PermissionEngine(admin_settings.permissions),
+            scheduler_running=True,
+        )
+        result = await ScheduleCreateTool().run(
+            {
+                "name": "every-five",
+                "prompt": "Check for new messages.",
+                "kind": "interval",
+                "expression": "300",
+            },
+            context,
+        )
+        assert "nothing_will_run_it" not in result.content

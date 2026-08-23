@@ -92,7 +92,7 @@ Full detail: [security model](docs/security.md) · [threat model](docs/threat-mo
 ## Quick start
 
 ```bash
-git clone https://github.com/tgagent/tgagent && cd tgagent
+git clone https://github.com/AmiRCandy/tgagent && cd tgagent
 ./install.sh                              # asks for credentials, signs you in
 ./hermes listen                           # now talk to it from Telegram
 ```

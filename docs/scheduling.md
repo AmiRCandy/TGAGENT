@@ -31,11 +31,35 @@ duplicate an existing task.
 
 ## Running the scheduler
 
+Something has to actually run the tasks. Both of these do:
+
 ```bash
-tgagent serve
+tgagent listen          # commands from Telegram, and the scheduler with them
+tgagent serve           # the scheduler alone
 ```
 
-Foreground until interrupted. For a daemon see [deployment](deployment.md).
+`listen` runs a scheduler by default, because a listener that accepts *"every
+morning at eight"* and then silently never runs it is a trap — the task is saved,
+the agent reports success, and nothing happens. Pass `--no-scheduler` if you
+deliberately run the two as separate processes.
+
+If you do split them, note what the running one knows: `schedule_create` says
+`nothing_will_run_it` when it is called in a process with no scheduler, and
+`agent ping` reports the scheduler's state and the next due task:
+
+```
+you    agent ping
+bot    🏓 pong
+       …
+       scheduler: `running` · 3 task(s) · next in 12m 04s
+```
+
+```
+       ⚠️ 3 enabled task(s), but the scheduler is OFF — none of them will run.
+```
+
+For a daemon see [deployment](deployment.md); `./hermes deploy` installs a
+systemd service that runs both.
 
 ## Unattended semantics — read this
 

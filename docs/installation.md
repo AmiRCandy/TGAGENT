@@ -17,7 +17,7 @@ If you have the repository, the installer asks for what it needs and gets you to
 signed-in agent:
 
 ```bash
-git clone https://github.com/tgagent/tgagent && cd tgagent
+git clone https://github.com/AmiRCandy/tgagent && cd tgagent
 ./install.sh
 ```
 
@@ -76,7 +76,7 @@ Keeps tgagent and its dependencies out of your system or project environments.
 ### From source
 
 ```bash
-git clone https://github.com/tgagent/tgagent
+git clone https://github.com/AmiRCandy/tgagent
 cd tgagent
 pip install -e ".[dev]"
 ```

@@ -22,8 +22,15 @@ Off by default, because this is the one path where your account speaks to
 somebody else without a per-message confirmation:
 
 ```bash
-TGAGENT_AUTOREPLY__ENABLED=true
+TGAGENT_AUTOREPLY__ENABLED=true      # then restart the listener
 ```
+
+Until you do, `autoreply_start` is not in the agent's tool list at all, and asking
+it to "reply to him while I'm away" gets you a straight answer that the feature is
+switched off — not a scheduled task that polls for new messages every few minutes.
+That imitation is worse than nothing: it answers minutes late, it cannot tell a
+burst from a conversation, and it double-replies or goes silent depending on how
+the polling lands.
 
 Then, from any chat:
 
