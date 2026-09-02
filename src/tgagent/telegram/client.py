@@ -13,6 +13,26 @@ given up. The watchdog here waits on ``client.disconnected`` and re-establishes
 the connection with capped exponential backoff, so a laptop closing its lid or a
 network changing underneath a long-running scheduled task does not silently
 strand the agent.
+
+The failure that watchdog cannot see
+------------------------------------
+A socket can die without either end noticing. A NAT or conntrack table drops an
+idle flow with no RST, and what remains is a client that reports itself
+connected, never resolves ``disconnected``, and never receives another update.
+Writes may still appear to work — they force a fresh connection on demand — so
+the process looks healthy from the inside and from its own logs while every
+arriving message goes nowhere. On a VPS the flow is usually dropped after
+fifteen to thirty minutes of quiet, which is precisely the reported symptom: a
+deployed listener that answers for half an hour and then has to be restarted.
+
+Waiting on the socket cannot detect that, so the health monitor watches the one
+thing that actually matters — *when an update last arrived* — and, once the
+connection has been quiet longer than ``idle_probe_after``, asks Telegram a
+question. Silence answers nothing; a failed or timed-out probe does, and the
+connection is torn down and rebuilt. If rebuilding fails
+``max_recovery_attempts`` times, :attr:`TelegramClientManager.failed` is set so
+the interface can exit and let a supervisor restart the process: a listener that
+has stopped listening should not keep the port.
 """
 
 from __future__ import annotations
@@ -20,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -89,6 +110,16 @@ class TelegramClientManager:
         self._closing = asyncio.Event()
         self._me: Any = None
 
+        self._monitor: asyncio.Task[None] | None = None
+        #: When something last arrived from Telegram, or a probe last proved the
+        #: connection alive. Monotonic, because this is a duration question and a
+        #: wall clock that steps backwards must not make a live client look stale.
+        self._last_seen = 0.0
+        self._recovery_failures = 0
+        #: Set when recovery has given up. The interface waits on this and exits,
+        #: rather than staying up in a state where it receives nothing.
+        self.failed = asyncio.Event()
+
     # ------------------------------------------------------------ lifecycle --
     def build(self) -> Any:
         """Create the client without connecting. Separated so login can reuse it."""
@@ -153,18 +184,23 @@ class TelegramClientManager:
                 user_id=getattr(self._me, "id", None),
                 username=getattr(self._me, "username", None),
             )
+            self.note_activity()
+            self._watch_updates()
             self._start_watchdog()
+            self._start_monitor()
 
         return client
 
     async def stop(self) -> None:
         """Disconnect and stop supervising. Safe to call more than once."""
         self._closing.set()
-        if self._watchdog is not None:
-            self._watchdog.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._watchdog
-            self._watchdog = None
+        for name in ("_watchdog", "_monitor"):
+            task = getattr(self, name)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                setattr(self, name, None)
 
         if self._client is not None and self._client.is_connected():
             try:
@@ -203,6 +239,122 @@ class TelegramClientManager:
         await client.connect()
         if not await client.is_user_authorized():
             raise NotAuthorizedError("The Telegram session is no longer authorised.")
+
+    # -------------------------------------------------------------- health ---
+    @property
+    def idle_seconds(self) -> float:
+        """How long since anything was heard from Telegram.
+
+        The number that distinguishes a quiet account from a dead connection —
+        which nothing else in the process can tell apart.
+        """
+        if not self._last_seen:
+            return 0.0
+        return max(0.0, time.monotonic() - self._last_seen)
+
+    @property
+    def healthy(self) -> bool:
+        """Connected, and heard from recently enough to believe it."""
+        if not self.connected:
+            return False
+        return self.idle_seconds < self._settings.idle_probe_after * 2
+
+    def note_activity(self) -> None:
+        """Record that Telegram was heard from just now."""
+        self._last_seen = time.monotonic()
+
+    def _watch_updates(self) -> None:
+        """Stamp every arriving update, whatever kind it is.
+
+        A raw handler rather than the bridge's own: the bridge only sees new
+        messages, and a connection carrying nothing but read receipts and typing
+        notifications is a connection that is very much alive.
+        """
+        from telethon import events
+
+        def _seen(_update: Any) -> None:
+            self.note_activity()
+
+        self._client.add_event_handler(_seen, events.Raw)
+
+    def _start_monitor(self) -> None:
+        if self._monitor is None or self._monitor.done():
+            self._monitor = asyncio.create_task(self._watch_health(), name="telegram-health")
+
+    async def _watch_health(self) -> None:
+        """Prove the connection is alive, or rebuild it."""
+        settings = self._settings
+        while not self._closing.is_set():
+            await asyncio.sleep(settings.health_check_interval)
+            if self._closing.is_set():
+                return
+            if not self.connected or self.idle_seconds < settings.idle_probe_after:
+                continue
+
+            log.info("telegram.probing", idle_seconds=round(self.idle_seconds))
+            if await self._probe():
+                # A successful probe *is* activity: it proves the connection was
+                # alive at this moment, which is what the idle timer means.
+                self.note_activity()
+                continue
+
+            await self._recover()
+
+    async def _probe(self) -> bool:
+        """Ask Telegram one cheap question, with a deadline.
+
+        The deadline is the point. A dead socket does not refuse the request, it
+        swallows it, so waiting forever is the same as not asking.
+        """
+        try:
+            await asyncio.wait_for(self.client.get_me(), timeout=min(30.0, self._settings.timeout))
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - any failure means "rebuild it"
+            log.warning("telegram.probe_failed", error=str(exc), idle=round(self.idle_seconds))
+            return False
+
+    async def _recover(self) -> None:
+        """Tear the connection down and build it again.
+
+        A plain ``connect()`` is not enough: the client believes it is already
+        connected, so it would return immediately and change nothing. Event
+        handlers survive this — they belong to the client object, not the
+        connection — so nothing needs re-registering.
+        """
+        log.error("telegram.connection_stale", idle_seconds=round(self.idle_seconds))
+        try:
+            with contextlib.suppress(Exception):
+                await self.client.disconnect()
+            await self.client.connect()
+            if not await self.client.is_user_authorized():
+                log.error("telegram.session_revoked")
+                self.failed.set()
+                return
+
+            self._me = await self.client.get_me()
+            # Ask for what was missed while the socket was a black hole.
+            if catch_up := getattr(self.client, "catch_up", None):
+                with contextlib.suppress(Exception):
+                    await catch_up()
+
+            self.note_activity()
+            self._recovery_failures = 0
+            log.warning("telegram.connection_rebuilt")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the next tick tries again
+            self._recovery_failures += 1
+            log.error(
+                "telegram.recovery_failed",
+                error=str(exc),
+                attempt=self._recovery_failures,
+                limit=self._settings.max_recovery_attempts,
+            )
+            if self._recovery_failures >= self._settings.max_recovery_attempts:
+                log.error("telegram.giving_up")
+                self.failed.set()
 
     # ------------------------------------------------------------ watchdog ---
     def _start_watchdog(self) -> None:

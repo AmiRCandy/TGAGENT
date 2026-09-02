@@ -427,6 +427,7 @@ def listen(
         )
         application.use_confirmations(bridge.confirmations)
 
+        failed = False
         try:
             await application.start(connect_telegram=True, start_scheduler=scheduler)
             await bridge.start()
@@ -466,12 +467,28 @@ def listen(
                     border_style="cyan",
                 )
             )
+            # Whichever comes first: a deliberate stop, or the connection being
+            # declared unrecoverable. Waiting only on the bridge is how a listener
+            # that can no longer hear anything stays up looking healthy — the
+            # process must end so a supervisor can replace it.
+            stopped = asyncio.create_task(bridge.wait_closed())
+            broken = asyncio.create_task(application.telegram.failed.wait())
             with contextlib.suppress(KeyboardInterrupt):
-                await bridge.wait_closed()
+                await asyncio.wait({stopped, broken}, return_when=asyncio.FIRST_COMPLETED)
+            for task in (stopped, broken):
+                task.cancel()
+            if broken.done() and not broken.cancelled():
+                err_console.print(
+                    "[red]The Telegram connection could not be recovered.[/red] Exiting so "
+                    "the service manager restarts a working one."
+                )
+                failed = True
         finally:
             console.print("[dim]Shutting down…[/dim]")
             await bridge.stop()
             await application.stop()
+        if failed:
+            raise typer.Exit(1)
 
     _run(main())
 

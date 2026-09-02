@@ -22,10 +22,12 @@ from tgagent.llm.base import (
     Role,
     StopReason,
     StreamEvent,
+    SystemPrompt,
     TextPart,
     ToolCallPart,
     ToolSpec,
     Usage,
+    system_text,
 )
 from tgagent.llm.tokens import estimate_text_tokens
 
@@ -82,13 +84,16 @@ class FakeProvider:
     async def complete(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,
     ) -> Completion:
         request = RecordedRequest(
-            system=system, messages=list(messages), tools=list(tools), params=params
+            system=system_text(system),
+            messages=list(messages),
+            tools=list(tools),
+            params=params,
         )
         self.requests.append(request)
 
@@ -103,13 +108,13 @@ class FakeProvider:
     async def stream(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
         completion = await self.complete(
-            system=system, messages=messages, tools=tools, params=params
+            system=system_text(system), messages=messages, tools=tools, params=params
         )
         if completion.text:
             # Chunked, so streaming consumers are exercised rather than handed

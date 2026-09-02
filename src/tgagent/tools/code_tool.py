@@ -30,36 +30,26 @@ from tgagent.tools.base import (
 log = get_logger(__name__)
 
 _DESCRIPTION = """\
-Run Python against the Telegram API. Use this whenever a task needs more than one \
-API call — looping, filtering, aggregating, or paginating — because it costs one \
-turn instead of many and keeps intermediate data out of the conversation.
+Run Python against the Telegram API. One call can loop, filter, paginate, and
+aggregate, so it replaces ten tool calls and keeps the intermediate data out of
+this conversation.
 
-Available in the program:
-  tg.<method>(...)                 any Telethon client method, keyword args only
-                                   e.g. tg.get_messages(entity="@alex", limit=100)
+In the program:
+  tg.<method>(...)                  any Telethon method, keyword args only
   tg.invoke_raw("ns.Method", {...}) any raw API request
-                                   e.g. tg.invoke_raw("messages.Search", {...})
   print(...)                        output you will see
-  result = <value>                  a structured value returned alongside the output
+  result = <value>                  a structured value returned alongside it
 
-Calls return plain JSON-compatible data (dicts and lists), not Telethon objects.
-Use telegram_api_search first if you are unsure of a method name or its parameters.
+Calls return plain JSON data, not Telethon objects. Only a safe subset of the
+standard library imports; there is no filesystem, network, or subprocess. The
+process holds no credentials and reaches Telegram through the same permission
+checks as every other tool, so a write may still be refused - a denial raises
+PermissionDeniedError, which you can catch.
 
-Restrictions: only the standard library is importable, and only a safe subset of \
-it. There is no filesystem, no network, and no os/subprocess access — the process \
-holds no credentials and reaches Telegram only through the same permission checks \
-that apply to every other tool. Write-type calls still require confirmation, and a \
-denial raises PermissionDeniedError, which you can catch.
-
-Example — everything Alex sent in January mentioning the migration:
-
-    msgs = tg.get_messages(entity="@alex", limit=500,
-                           offset_date="2026-02-01", reverse=False)
-    hits = [m for m in msgs
-            if m.get("text") and "migration" in m["text"].lower()
-            and m["date"] >= "2026-01-01"]
+    msgs = tg.get_messages(entity="@alex", limit=500)
+    hits = [m for m in msgs if "migration" in (m.get("text") or "").lower()]
     print(f"scanned {len(msgs)}, matched {len(hits)}")
-    result = [{"id": m["id"], "date": m["date"], "text": m["text"][:200]} for m in hits]
+    result = [{"id": m["id"], "date": m["date"]} for m in hits]
 """
 
 

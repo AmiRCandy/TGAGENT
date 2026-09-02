@@ -28,10 +28,12 @@ from tgagent.llm.base import (
     LLMProvider,
     Message,
     Role,
+    SystemPrompt,
     TextPart,
     ToolCallPart,
     ToolResultPart,
     ToolSpec,
+    system_text,
 )
 from tgagent.llm.tokens import build_budget, estimate_messages_tokens
 from tgagent.observability.logging import get_logger
@@ -69,11 +71,11 @@ class ContextManager:
         return estimate_messages_tokens(messages)
 
     def needs_compaction(
-        self, messages: Sequence[Message], *, system: str, tools: Sequence[ToolSpec]
+        self, messages: Sequence[Message], *, system: SystemPrompt, tools: Sequence[ToolSpec]
     ) -> bool:
         budget = build_budget(
             context_window=self._provider.context_window,
-            system=system,
+            system=system_text(system),
             tools=tools,
             reserved_output_tokens=self._settings_max_output(),
         )
@@ -85,7 +87,7 @@ class ContextManager:
         self,
         messages: list[Message],
         *,
-        system: str,
+        system: SystemPrompt,
         tools: Sequence[ToolSpec],
     ) -> tuple[list[Message], CompactionOutcome]:
         """Replace the oldest turns with a summary, if that is possible and useful."""
@@ -117,7 +119,7 @@ class ContextManager:
 
         budget = build_budget(
             context_window=self._provider.context_window,
-            system=system,
+            system=system_text(system),
             tools=tools,
             reserved_output_tokens=self._settings_max_output(),
         )

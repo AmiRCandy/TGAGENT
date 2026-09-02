@@ -28,7 +28,7 @@ from typing import Any
 
 from tgagent.agent.context import ContextManager
 from tgagent.agent.events import AgentEvent, EventKind, RunResult
-from tgagent.agent.prompts import COMPACTION_PROMPT, build_system_prompt
+from tgagent.agent.prompts import COMPACTION_PROMPT, build_system_blocks
 from tgagent.config.settings import Settings
 from tgagent.errors import (
     LLMConfigError,
@@ -45,6 +45,7 @@ from tgagent.llm.base import (
     LLMProvider,
     Message,
     StopReason,
+    SystemPrompt,
     TextPart,
     ToolCallPart,
     ToolResultPart,
@@ -198,7 +199,9 @@ class AgentRuntime:
             cancelled=cancel,
         )
 
-        system = build_system_prompt(
+        # Two blocks, stable first: the provider marks the first cacheable and
+        # leaves the per-run tail out of the cached prefix.
+        system = build_system_blocks(
             settings,
             now=datetime.now(UTC),
             account=self._deps.account,
@@ -346,7 +349,7 @@ class AgentRuntime:
     # --------------------------------------------------------------- model ---
     async def _ask_model(
         self,
-        system: str,
+        system: SystemPrompt,
         history: Sequence[Message],
         tools: Sequence[Any],
         emit: Callable[[AgentEvent], Awaitable[None]],
@@ -496,7 +499,7 @@ class AgentRuntime:
     async def _maybe_compact(
         self,
         history: list[Message],
-        system: str,
+        system: SystemPrompt,
         tools: Sequence[Any],
         emit: Callable[[AgentEvent], Awaitable[None]],
     ) -> list[Message]:

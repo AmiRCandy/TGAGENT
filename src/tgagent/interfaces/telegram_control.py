@@ -1308,6 +1308,7 @@ class TelegramControlBridge:
             f"runs in flight: `{len(self._active)}` · commands this minute: "
             f"`{len(self._accepted)}/{self._settings.max_commands_per_minute}`"
         )
+        lines.append(self._connection_line())
         lines.append(await self._scheduler_line())
         text = "\n".join(lines)
 
@@ -1320,6 +1321,22 @@ class TelegramControlBridge:
         )
         if not (ids and await self._edit(source, ids[0], text)):
             await self._reply(source, text)
+
+    def _connection_line(self) -> str:
+        """How long since Telegram last said anything.
+
+        The one number that tells a quiet account apart from a connection that
+        died twenty minutes ago — otherwise indistinguishable, because sending
+        still works: a write forces a fresh connection, while nothing arrives.
+        """
+        manager = self._manager
+        idle = getattr(manager, "idle_seconds", None)
+        if idle is None:
+            return "connection: `not reporting`"
+        if not getattr(manager, "connected", True):
+            return "⚠️ **the client is disconnected** — reconnecting"
+        state = "healthy" if getattr(manager, "healthy", True) else "**stale, rebuilding**"
+        return f"last heard from Telegram: `{_duration(idle)} ago` · {state}"
 
     async def _scheduler_line(self) -> str:
         """Whether scheduled work will actually happen, in one line.

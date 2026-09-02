@@ -77,6 +77,20 @@ class TelegramSettings(BaseModel):
     #: Wait at most this long for an interactive code/password during login.
     login_timeout: float = Field(default=300.0, gt=0)
 
+    #: How often to look at whether updates are still arriving. Cheap: it only
+    #: reads a timestamp unless the connection has gone quiet.
+    health_check_interval: float = Field(default=60.0, ge=5.0, le=3600.0)
+    #: Quiet for this long and the connection is actively probed. A socket can
+    #: die without either side noticing — a NAT or conntrack table drops the flow
+    #: with no RST — and the result is a client that reports itself connected,
+    #: never fires `disconnected`, and silently receives nothing again. Fifteen
+    #: to thirty minutes is the classic interval for that on a VPS, which is
+    #: exactly when a listener appears to be running and answers nothing.
+    idle_probe_after: float = Field(default=300.0, ge=30.0, le=86_400.0)
+    #: Consecutive failed recoveries before giving up and letting the supervisor
+    #: restart the process. Exiting beats pretending to run.
+    max_recovery_attempts: int = Field(default=5, ge=1, le=100)
+
     @field_validator("phone")
     @classmethod
     def _check_phone(cls, v: str | None) -> str | None:
@@ -129,6 +143,13 @@ class LLMSettings(BaseModel):
     stream: bool = Field(
         default=True, description="Stream responses where the provider supports it"
     )
+
+    #: Ask the provider to cache the unchanging prefix of each request — the tool
+    #: schemas and the system prompt, together some 9k tokens that are otherwise
+    #: re-read on every step of every run. Anthropic needs to be asked explicitly
+    #: (this is that ask); OpenAI-compatible endpoints do it themselves and ignore
+    #: the setting. Off is for a gateway that rejects the field.
+    prompt_caching: bool = Field(default=True)
 
     #: Extra provider-specific keyword arguments, passed through untouched.
     extra: dict[str, Any] = Field(default_factory=dict)

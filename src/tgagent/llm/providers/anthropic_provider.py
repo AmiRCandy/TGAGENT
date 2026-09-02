@@ -27,10 +27,12 @@ from tgagent.llm.base import (
     Role,
     StopReason,
     StreamEvent,
+    SystemPrompt,
     TextPart,
     ToolCallPart,
     ToolSpec,
     Usage,
+    system_blocks,
 )
 from tgagent.llm.retry import retry_async
 from tgagent.llm.tokens import estimate_text_tokens
@@ -89,7 +91,7 @@ class AnthropicProvider:
     async def complete(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,
@@ -114,7 +116,7 @@ class AnthropicProvider:
     async def stream(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,
@@ -144,7 +146,7 @@ class AnthropicProvider:
     # ------------------------------------------------------------ internals --
     def _build_request(
         self,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec],
         params: GenerationParams | None,
@@ -156,13 +158,33 @@ class AnthropicProvider:
             "max_tokens": p.max_output_tokens,
             "messages": [self._encode_message(m) for m in messages if m.role is not Role.SYSTEM],
         }
-        if system:
-            request["system"] = system
+        caching = self._settings.prompt_caching
+        if blocks := system_blocks(system):
+            # Blocks rather than a bare string, because that is the only encoding a
+            # breakpoint attaches to — and the mark goes on the *first* block only.
+            # Everything before a breakpoint is cached, so marking the stable block
+            # and leaving the per-run tail after it is what lets one prefix serve
+            # every run instead of only the steps within a run.
+            prompt: list[dict[str, Any]] = [{"type": "text", "text": text} for text in blocks]
+            prompt[0] = _cached(prompt[0], caching)
+            request["system"] = prompt
         if tools:
-            request["tools"] = [
+            specs: list[dict[str, Any]] = [
                 {"name": t.name, "description": t.description, "input_schema": t.parameters}
                 for t in tools
             ]
+            # The API caches everything *before* a breakpoint, and its prefix order
+            # is tools → system → messages. One mark on the last tool therefore
+            # covers the whole tool array, and the mark on the system block above
+            # covers tools plus system. Both are byte-identical on every request
+            # this process makes, in every chat, for every run — which is what
+            # makes this the single largest saving available: ~6k tokens of tool
+            # schema and ~3k of instructions stop being re-read every step.
+            specs[-1] = _cached(specs[-1], caching)
+            request["tools"] = specs
+
+        if caching:
+            _cache_history(request["messages"])
         if p.stop_sequences:
             request["stop_sequences"] = list(p.stop_sequences)
 
@@ -321,3 +343,44 @@ def _retry_after_header(exc: Any) -> float | None:
         return float(headers.get("retry-after"))
     except (TypeError, ValueError):
         return None
+
+
+# ------------------------------------------------------------------ caching ---
+#: Below this, a breakpoint is ignored by the API anyway (the minimum cacheable
+#: prefix), so marking a conversation this short only risks paying the write
+#: premium for nothing.
+_MIN_CACHEABLE_HISTORY_TOKENS = 1024
+
+
+def _cached(block: dict[str, Any], enabled: bool) -> dict[str, Any]:
+    """Attach a cache breakpoint to *block*, if caching is on."""
+    if not enabled:
+        return block
+    return {**block, "cache_control": {"type": "ephemeral"}}
+
+
+def _cache_history(messages: list[dict[str, Any]]) -> None:
+    """Mark the end of the conversation so far, in place.
+
+    An agent loop re-sends every earlier turn on each step, so the naive cost of
+    an *n*-step run is quadratic in its own history. A rolling breakpoint on the
+    last block turns the next step's re-read into a cache hit and flattens that
+    curve.
+
+    A write costs more than a plain read, so this is only worth doing once there
+    is enough history to cache: short runs — the majority — pay nothing extra.
+    """
+    if not messages:
+        return
+    size = estimate_text_tokens(
+        "".join(
+            str(block.get("text") or block.get("content") or "")
+            for message in messages
+            for block in message.get("content", [])
+        )
+    )
+    if size < _MIN_CACHEABLE_HISTORY_TOKENS:
+        return
+    blocks = messages[-1].get("content") or []
+    if blocks:
+        blocks[-1] = _cached(blocks[-1], True)

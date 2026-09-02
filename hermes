@@ -594,7 +594,9 @@ WorkingDirectory=$ROOT
 ExecStart=$VENV/bin/tgagent listen --scheduler
 # The session file and database are credentials; keep the log free of chat text.
 Environment=TGAGENT_LOGGING__FORMAT=json
-Restart=on-failure
+# always, not on-failure: a listener that can no longer hear anything exits 1 on
+# purpose, and even a clean exit should be replaced rather than left stopped.
+Restart=always
 RestartSec=10
 # Telegram rate-limits an account that reconnects in a tight loop.
 StartLimitIntervalSec=300

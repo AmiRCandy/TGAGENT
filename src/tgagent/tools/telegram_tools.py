@@ -57,9 +57,8 @@ class _TelegramTool:
 class ListDialogsTool(_TelegramTool):
     name = "telegram_list_dialogs"
     description = (
-        "List the account's conversations (private chats, groups, channels), most "
-        "recently active first. Use this to discover what chats exist and which have "
-        "unread messages, before reading or searching any of them."
+        "The account's conversations — private chats, groups, channels — most recently active "
+        "first, with unread counts. Start here when you do not yet know which chats exist."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
@@ -92,9 +91,8 @@ class ListDialogsTool(_TelegramTool):
 class ResolvePeerTool(_TelegramTool):
     name = "telegram_resolve_peer"
     description = (
-        "Resolve a chat or user reference to its canonical id, type, and display name. "
-        "Use this to turn a name like '@alex' or 'Project X' into an id you can pass to "
-        "other tools, and to confirm you have the right person before sending anything."
+        "Turn a reference like '@alex' or 'Project X' into its canonical id, type, and display "
+        "name. Confirm you have the right person with this before sending anything."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema({"peer": _PEER_FIELD}, required=["peer"])
@@ -120,11 +118,8 @@ class ResolvePeerTool(_TelegramTool):
 class ReadHistoryTool(_TelegramTool):
     name = "telegram_read_history"
     description = (
-        "Read a page of messages from one chat, newest first by default. Supports "
-        "cursor pagination: pass the returned 'next_offset_id' back as 'offset_id' to "
-        "continue. Prefer telegram_search_messages when you know what you are looking "
-        "for — it filters server-side and is far cheaper than paging through everything. "
-        "For scanning thousands of messages, use the `python` tool instead."
+        "One page of messages from a chat, newest first. Pass the returned 'next_offset_id' back "
+        "as 'offset_id' to continue from where you stopped."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
@@ -169,10 +164,8 @@ class ReadHistoryTool(_TelegramTool):
 class SearchMessagesTool(_TelegramTool):
     name = "telegram_search_messages"
     description = (
-        "Search message text. With 'peer', searches inside that chat; without it, "
-        "searches every chat the account can see. Filtering happens on Telegram's "
-        "servers, so this is dramatically cheaper than reading history and scanning it. "
-        "Supports date bounds and sender/media filters."
+        "Search message text on Telegram's servers: inside one chat with 'peer', or across every "
+        "chat the account can see without it. Takes date bounds and sender/media filters."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
@@ -265,8 +258,8 @@ class SearchMessagesTool(_TelegramTool):
 class GetParticipantsTool(_TelegramTool):
     name = "telegram_get_participants"
     description = (
-        "List the members of a group or channel, with their roles where visible. "
-        "Large channels only expose a subset of members."
+        "Members of a group or channel, with roles where visible. Large channels expose only a "
+        "subset."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
@@ -306,9 +299,8 @@ class GetParticipantsTool(_TelegramTool):
 class GetMeTool(_TelegramTool):
     name = "telegram_get_me"
     description = (
-        "Return the signed-in account's own id, username, and display name. Use this "
-        "to tell the user's own messages apart from other people's, and to resolve "
-        "first-person references like 'messages I sent'."
+        "The signed-in account's own id, username, and display name — what 'me', 'my messages', "
+        "and first-person references resolve to."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema({})
@@ -328,10 +320,8 @@ class GetMeTool(_TelegramTool):
 class SendMessageTool(_TelegramTool):
     name = "telegram_send_message"
     description = (
-        "Send a text message to a chat or user. This is visible to other people and "
-        "cannot be un-sent for them once delivered, so it requires confirmation under "
-        "the default policy. Resolve the peer first if there is any ambiguity about "
-        "who you are messaging."
+        "Send a text message. Other people see it and it cannot be un-sent for them, so it needs "
+        "confirmation under the default policy — be certain of the peer first."
     )
     risk_hint = RiskTier.EXTERNALLY_VISIBLE
     parameters = object_schema(
@@ -373,8 +363,8 @@ class SendMessageTool(_TelegramTool):
 class EditMessageTool(_TelegramTool):
     name = "telegram_edit_message"
     description = (
-        "Edit a message the account previously sent. Other participants see an "
-        "'edited' marker. Only the account's own messages can be edited."
+        "Edit a message this account sent. Others see an 'edited' marker, and only the account's "
+        "own messages can be edited."
     )
     risk_hint = RiskTier.EXTERNALLY_VISIBLE
     parameters = object_schema(
@@ -405,8 +395,7 @@ class EditMessageTool(_TelegramTool):
 class ForwardMessagesTool(_TelegramTool):
     name = "telegram_forward_messages"
     description = (
-        "Forward one or more messages from one chat to another. The recipient sees the "
-        "original author. Externally visible, so it requires confirmation by default."
+        "Forward messages from one chat to another. The recipient sees the original author."
     )
     risk_hint = RiskTier.EXTERNALLY_VISIBLE
     parameters = object_schema(
@@ -448,9 +437,8 @@ class ForwardMessagesTool(_TelegramTool):
 class DeleteMessagesTool(_TelegramTool):
     name = "telegram_delete_messages"
     description = (
-        "Delete messages. THIS IS NOT REVERSIBLE. With revoke=true the messages are "
-        "removed for everyone, not just this account. Requires confirmation under the "
-        "default policy; confirm the exact ids with the user before calling."
+        "Delete messages. NOT REVERSIBLE, and with revoke=true they are gone for everyone rather "
+        "than just this account. Confirm the exact ids with the user before calling."
     )
     risk_hint = RiskTier.DESTRUCTIVE
     parameters = object_schema(
@@ -490,8 +478,8 @@ class DeleteMessagesTool(_TelegramTool):
 class MarkReadTool(_TelegramTool):
     name = "telegram_mark_read"
     description = (
-        "Mark a chat as read. Reversible in the sense that it changes only this "
-        "account's read state, though the sender may see read receipts."
+        "Mark a chat as read. Changes only this account's read state, though the sender may see a "
+        "read receipt."
     )
     risk_hint = RiskTier.REVERSIBLE
     parameters = object_schema({"peer": _PEER_FIELD}, required=["peer"])
@@ -511,9 +499,9 @@ class MarkReadTool(_TelegramTool):
 class DownloadMediaTool(_TelegramTool):
     name = "telegram_download_media"
     description = (
-        "Download the file attached to a message to local disk, returning its path and "
-        "metadata. Size and MIME type are validated before the transfer starts, and "
-        "executable types are refused. Downloaded files are never executed or opened."
+        "Download a message's attachment and return its path and metadata. Size and MIME type are "
+        "checked before the transfer and executables are refused; nothing downloaded is ever "
+        "opened or run."
     )
     risk_hint = RiskTier.REVERSIBLE
     parameters = object_schema(
@@ -545,13 +533,9 @@ class DownloadMediaTool(_TelegramTool):
 class InvokeTool(_TelegramTool):
     name = "telegram_invoke"
     description = (
-        "Call any Telegram API method directly — the full ~800-method surface, not "
-        "just the curated tools. Use telegram_api_search first to find the method name "
-        "and its parameters. Method names are either raw TL requests like "
-        "'messages.Search' or 'channels.GetParticipants', or Telethon client methods "
-        "like 'get_messages'. Peer arguments accept @usernames and ids and are resolved "
-        "for you. For anything needing loops or filtering across many results, use the "
-        "`python` tool instead — it is one call rather than many."
+        "Call any Telegram method directly — raw TL like 'messages.Search', or a Telethon method "
+        "like 'get_messages'. Find the exact name and parameters with telegram_api_search first. "
+        "Peer arguments accept @usernames and ids."
     )
     risk_hint = RiskTier.DESTRUCTIVE  # the classifier decides per-method
     parameters = object_schema(

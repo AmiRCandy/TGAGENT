@@ -28,66 +28,34 @@ or what gets deleted, ask rather than guess.\
 """
 
 _CAPABILITIES = """\
-# How to reach Telegram
+# Reaching Telegram
 
-You have three levels of access. Use the cheapest one that does the job.
+Everything Telegram can do is reachable from here. Pick by what the request needs, cheapest first.
 
-1. **Curated tools** (`telegram_list_dialogs`, `telegram_search_messages`, \
-`telegram_read_history`, `telegram_send_message`, …). Fast, predictable, \
-token-efficient. Most requests need nothing else.
+| What you need | Reach for |
+|---|---|
+| what chats exist, which are unread | `telegram_list_dialogs` |
+| a message by text, date, or sender | `telegram_search_messages` — filters on Telegram's servers |
+| the messages in one chat | `telegram_read_history` — pass `next_offset_id` back to continue |
+| a name turned into an id, or who you are | `telegram_resolve_peer`, `telegram_get_me` |
+| who is in a group | `telegram_get_participants` |
+| to send, edit, forward, delete, or mark read | the matching `telegram_*` tool |
+| a file off a message | `telegram_download_media` |
+| any of the above across *many* chats or messages | `python` — loops and filters inside one call |
+| an operation nothing above covers | `telegram_api_search`, then `telegram_invoke` or `python` |
+| to remember or recall a durable fact | `memory_write`, `memory_read` |
+| something to happen on a clock | `schedule_create` (`schedule_list` first) |
+| someone answered on the owner's behalf | `autoreply_start` |
 
-2. **`telegram_api_search`**. The full Telegram API is far larger than the \
-curated tools. When you need something they do not cover, search for it — you \
-get exact method names, parameters, and types, generated from the library that \
-is actually installed. Do this instead of guessing at a method name.
+Six rules settle most of what the table does not:
 
-3. **`python`**. Runs a program that can call any Telegram method through `tg`. \
-Reach for this whenever a task needs more than one or two API calls — looping, \
-filtering, aggregating, or paginating. One `python` call that scans 500 messages \
-and returns the 8 that matter is far better than 10 tool calls that drag \
-everything through this conversation. `telegram_invoke` is available for a \
-single raw call where a whole program would be overkill.
-
-Between them these reach the entire API, so "there is no tool for that" is never \
-a finished answer. If no curated tool covers what was asked, search for the \
-method and call it. The only real limits are the permission policy, which is \
-explicit and reported below, and whether Telegram itself can do the thing.\
-"""
-
-_TOOL_CRAFT = """\
-# Using those three well
-
-The tiers are a ladder, and most wasted turns come from standing on the wrong rung.
-
-**Choose by the shape of the request, not by trying and failing.** One chat, one \
-page, one message: a curated tool. A sentence with "every", "all", "find each", or \
-a loop in it: `python`, first time. One specific operation the curated set does not \
-cover: search for the method, then call it.
-
-**The discovery loop, concretely.** When there is no tool for something — changing \
-the profile name, say — it takes two steps and no guessing:
-
-    telegram_api_search("update profile name")
-        → account.UpdateProfile(first_name?, last_name?, about?)
-    telegram_invoke("account.UpdateProfile", {"first_name": "Amir · 14:05"})
-
-Then read it back with `telegram_resolve_peer("me")` and report what it now says. \
-The same pair works for every one of the ~800 methods the curated tools omit, so \
-"there is no tool for that" is never where you stop.
-
-**Send several independent calls in one turn.** Reading three chats is one turn with \
-three calls, not three turns. Only chain them when a later call genuinely needs an \
-earlier result.
-
-**Resolve a peer once.** Keep the numeric id it returned and pass that from then on. \
-Re-resolving the same @username is a round trip that buys nothing.
-
-**Never repeat a call that just failed the same way.** A tool error is information: \
-read it, then change the arguments, the method, or the plan. Identical retries are \
-how a run burns its whole budget without moving.
-
-**Look at what came back before deciding the next step.** If a result was truncated \
-or hit a limit, say so in your answer rather than presenting it as complete.\
+1. **A loop in the sentence means `python`.** "Every", "all", "find each", "how many" — one program, not ten tool calls, returning only the answer.
+2. **Searching is never reading.** Never page through history for something `telegram_search_messages` can filter server-side.
+3. **"There is no tool for that" is not an answer.** Search the API, then call it: the curated tools are the common tenth of some 800 methods.
+4. **Independent calls belong in one turn.** Reading three chats is one turn with three calls. Chain only when a call genuinely needs an earlier result.
+5. **Never repeat a call that just failed the same way.** Read the error, then change the arguments, the method, or the plan.
+6. **Resolve a peer once** and reuse the id it gave you.
+\
 """
 
 _STANDING_WORK = """\
@@ -105,16 +73,15 @@ alone: what to do, where, and how to tell when it is already done.
 their message rather than on a clock, which is what "reply for me while I'm out" \
 actually needs.
 
-**If `autoreply_start` is not in your tool list, that capability is switched off in \
-this deployment. Say so.** Tell them it needs \
-`TGAGENT_AUTOREPLY__ENABLED=true` and a restart, and stop there. Do not build it out \
-of a schedule that wakes up every few minutes to look for new messages: it replies \
-minutes late, it cannot tell a burst from a conversation, it double-replies or goes \
-silent depending on how the polling lands, and it is not the thing they asked for. \
-Offering a broken imitation is worse than reporting a missing feature, because they \
-will believe it works.
 - **Check what already exists first** with `schedule_list`, so a repeated request \
 does not become two tasks doing the same thing.
+
+**If `autoreply_start` is not in your tool list, that capability is switched off \
+here. Say so**, tell them it needs `TGAGENT_AUTOREPLY__ENABLED=true` and a restart, \
+and stop. Do not build it out of a schedule that polls for new messages: it answers \
+minutes late, cannot tell a burst from a conversation, and double-replies or goes \
+silent depending on how the polling lands. A broken imitation is worse than a \
+missing feature, because they will believe it works.
 
 Then say back, in one line, what will happen and when it first runs.
 
@@ -133,15 +100,11 @@ _LARGE_HISTORY = """\
 
 Telegram accounts hold enormous amounts of history. Never try to read it all.
 
-- Push filtering to the server: `telegram_search_messages` with a query, a date \
-range, and a sender is dramatically cheaper than reading pages and scanning them.
-- Paginate deliberately, using the returned `next_offset_id`, and stop as soon as \
-you have what you need.
-- For anything beyond a few hundred messages, write a `python` program: filter \
-there and return only the results. Intermediate data never has to enter this \
-conversation.
-- If a request is genuinely unbounded ("summarise everything"), narrow it with \
-the user first — propose a date range or a set of chats.\
+- Paginate deliberately and stop as soon as you have what you need.
+- Past a few hundred messages, filter inside `python` and return only the results: \
+intermediate data never has to enter this conversation.
+- If a request is genuinely unbounded ("summarise everything"), narrow it with the \
+user first — propose a date range or a set of chats.\
 """
 
 _TRUST = """\
@@ -231,8 +194,39 @@ def build_system_prompt(
     tool_names: list[str] | None = None,
     interactive: bool = True,
 ) -> str:
-    """Assemble the system prompt for one run."""
-    sections: list[str] = [_ROLE, _CAPABILITIES, _TOOL_CRAFT, _STANDING_WORK, _LARGE_HISTORY]
+    """The whole system prompt as one string.
+
+    One readable rendering, for tests and for anything that wants to *show* the
+    prompt. A run sends :func:`build_system_blocks` instead.
+    """
+    return "\n\n".join(
+        build_system_blocks(
+            settings, now=now, account=account, tool_names=tool_names, interactive=interactive
+        )
+    )
+
+
+def build_system_blocks(
+    settings: Settings,
+    *,
+    now: datetime,
+    account: dict[str, Any] | None = None,
+    tool_names: list[str] | None = None,
+    interactive: bool = True,
+) -> tuple[str, str]:
+    """The system prompt split into ``(unchanging, per-run)``.
+
+    The split is for prompt caching, and the order is the whole point: a provider
+    cache is a *prefix* match, so one byte of drift before the breakpoint costs
+    the entire prefix. Everything identical across every request this deployment
+    makes goes in the first block, which is the one marked cacheable; the current
+    time and anything else that moves per run goes in the second, after the
+    breakpoint, where changing it is free.
+
+    Get that backwards — a timestamp a few lines from the top — and the cache
+    never hits once, while every reading of the code says it should.
+    """
+    sections: list[str] = [_ROLE, _CAPABILITIES, _STANDING_WORK, _LARGE_HISTORY]
     sections.append(_TRUST.format(sentinel=sentinel_tag()))
     sections.append(_PERMISSIONS)
 
@@ -290,9 +284,8 @@ def build_system_prompt(
         )
     if tool_names:
         context_lines.append(f"- Tools available: {', '.join(tool_names)}")
-    sections.append("\n".join(context_lines))
 
-    return "\n\n".join(sections)
+    return "\n\n".join(sections), "\n".join(context_lines)
 
 
 COMPACTION_PROMPT = """\

@@ -18,6 +18,49 @@ Logs are redacted automatically, but read them before pasting anywhere.
 
 ---
 
+## It ran for half an hour and then stopped answering
+
+The logs still say it is running, `systemctl --user status tgagent` is green, and
+only a restart brings it back.
+
+**What is happening.** A NAT or conntrack table dropped the idle MTProto flow
+without sending an RST. The client still reports itself connected, Telethon's
+`disconnected` future never resolves, and no update ever arrives again. Sending
+keeps working — a write forces a fresh connection — so the process looks healthy
+from the inside, from its own logs, and from anything that only checks the
+socket. Fifteen to thirty minutes is the usual interval on a VPS.
+
+**What now happens instead.** The client tracks when it last *heard* from
+Telegram, counting any update at all. Quiet for longer than
+`telegram.idle_probe_after` (5 minutes) and it asks Telegram a question with a
+deadline, because a dead socket does not refuse a request — it swallows it. A
+failed probe tears the connection down and rebuilds it, then calls `catch_up()`
+for what was missed. After `telegram.max_recovery_attempts` consecutive
+failures the process exits 1 so the service manager replaces it; `Restart=always`
+in the unit file is what makes that work.
+
+Ask it directly:
+
+```
+you    agent ping
+bot    🏓 pong
+       …
+       last heard from Telegram: 12s ago · healthy
+```
+
+A large number there, or `stale, rebuilding`, is this fault. In the journal:
+
+```bash
+./hermes logs | grep -E "telegram.(probing|connection_stale|connection_rebuilt|giving_up)"
+```
+
+If you are on an older unit file, redeploy it — `Restart=on-failure` never fires
+for a process that is hung rather than crashed:
+
+```bash
+./hermes deploy
+```
+
 ## Setup
 
 ### `Telegram credentials are missing`

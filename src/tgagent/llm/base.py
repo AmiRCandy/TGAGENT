@@ -239,6 +239,25 @@ class GenerationParams:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+#: A system prompt as the providers accept it: one string, or an ordered sequence
+#: of blocks with the *stable* ones first. The split exists so a provider can mark
+#: the unchanging prefix cacheable and leave the per-run tail outside it; one with
+#: no such notion joins them and loses nothing.
+SystemPrompt = str | Sequence[str]
+
+
+def system_blocks(system: SystemPrompt) -> list[str]:
+    """Normalise a system prompt to a list of non-empty blocks."""
+    if isinstance(system, str):
+        return [system] if system else []
+    return [block for block in system if block]
+
+
+def system_text(system: SystemPrompt) -> str:
+    """Flatten a system prompt for a provider that takes a single string."""
+    return "\n\n".join(system_blocks(system))
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """What the agent runtime needs from a model provider."""
@@ -253,7 +272,7 @@ class LLMProvider(Protocol):
     async def complete(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,
@@ -264,7 +283,7 @@ class LLMProvider(Protocol):
     def stream(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,

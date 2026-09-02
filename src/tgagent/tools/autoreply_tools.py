@@ -64,15 +64,12 @@ def _marked_chat_id(peer_id: int, kind: str) -> int:
 class AutoReplyStartTool:
     name = "autoreply_start"
     description = (
-        "Start answering a chat automatically, as the account owner, until it expires. "
-        "Use this when the owner asks you to reply for them — 'answer him while I'm "
-        "away', 'keep the conversation going', 'reply to her the way I would'. Every "
-        "message that arrives in that chat then starts a run whose answer is sent there "
-        "as the owner, so write the instruction as standing guidance: who to answer, "
-        "what to say and not say, and when to stay quiet. Read the recent history with "
-        "the other person first — the instruction should capture how they actually "
-        "write. The watch stops on its own at the expiry or the reply budget, "
-        "whichever comes first; tell the owner both numbers when you report back."
+        "Answer a chat automatically, as the account owner, until it expires — for "
+        "'reply for me while I'm away'. The instruction is standing guidance for every "
+        "reply: who to answer, what never to commit to, and when to stay silent. Read "
+        "the recent history with that person first so it captures how they actually "
+        "write. It stops at the expiry or the reply budget, whichever comes first; give "
+        "the owner both numbers."
     )
     risk_hint = RiskTier.EXTERNALLY_VISIBLE
     parameters = object_schema(
@@ -160,9 +157,8 @@ class AutoReplyStartTool:
 class AutoReplyListTool:
     name = "autoreply_list"
     description = (
-        "List the chats being answered automatically, with what each was told to do, "
-        "how many replies it has sent, and when it stops. Check this before starting "
-        "another one, and use it to answer 'are you still replying to anyone?'."
+        "Which chats are being answered automatically: the standing instruction, how many replies "
+        "each has sent, and when it stops."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
@@ -191,10 +187,8 @@ class AutoReplyListTool:
 class AutoReplyStopTool:
     name = "autoreply_stop"
     description = (
-        "Stop answering a chat automatically. Use it the moment the owner says they are "
-        "back, or asks you to stop replying to someone. Pass 'all' to stop every watch "
-        "at once — do that rather than stopping them one at a time when the owner sounds "
-        "like they want it all off."
+        "Stop answering a chat automatically. Pass 'all' to stop every one at once, which is what "
+        "'I'm back' means."
     )
     risk_hint = RiskTier.REVERSIBLE
     parameters = object_schema(

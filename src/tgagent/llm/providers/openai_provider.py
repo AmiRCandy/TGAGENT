@@ -25,11 +25,13 @@ from tgagent.llm.base import (
     Role,
     StopReason,
     StreamEvent,
+    SystemPrompt,
     TextPart,
     ToolCallPart,
     ToolResultPart,
     ToolSpec,
     Usage,
+    system_text,
 )
 from tgagent.llm.retry import retry_async
 from tgagent.llm.tokens import estimate_text_tokens
@@ -81,7 +83,7 @@ class OpenAICompatibleProvider:
     async def complete(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,
@@ -106,7 +108,7 @@ class OpenAICompatibleProvider:
     async def stream(
         self,
         *,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         params: GenerationParams | None = None,
@@ -183,7 +185,7 @@ class OpenAICompatibleProvider:
     # ------------------------------------------------------------ internals --
     def _build_request(
         self,
-        system: str,
+        system: SystemPrompt,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec],
         params: GenerationParams | None,
@@ -191,8 +193,11 @@ class OpenAICompatibleProvider:
         p = params or GenerationParams(max_output_tokens=self._settings.max_output_tokens)
 
         wire: list[dict[str, Any]] = []
-        if system:
-            wire.append({"role": "system", "content": system})
+        # One message, blocks joined: these endpoints cache prefixes themselves and
+        # have nowhere to put a breakpoint, so the split is invisible here — but the
+        # *order* still matters, since their automatic caching is a prefix match too.
+        if text := system_text(system):
+            wire.append({"role": "system", "content": text})
         for message in messages:
             wire.extend(self._encode_message(message))
 

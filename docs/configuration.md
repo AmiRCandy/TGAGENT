@@ -70,6 +70,7 @@ $ tgagent config policy    # the effective permission policy
 | `timeout` | `180.0` | |
 | `max_retries` | `4` | Exponential backoff with full jitter |
 | `stream` | `true` | |
+| `prompt_caching` | `true` | Cache the unchanging prefix — tool schemas plus standing instructions, ~7.5k tokens — at the provider. Anthropic must be asked; OpenAI-compatible endpoints do it themselves and ignore this |
 | `extra` | `{}` | Passed to the SDK untouched |
 
 Set `context_window` to the real window of the model you chose — the compactor

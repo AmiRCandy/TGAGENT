@@ -36,15 +36,12 @@ from tgagent.tools.base import (
 class ScheduleCreateTool:
     name = "schedule_create"
     description = (
-        "Create a recurring or one-off task that runs this agent with a fixed prompt. "
-        "This is how any standing request becomes real — 'every minute', 'each "
-        "morning', 'from now on' — and the prompt you store is a fresh instruction to "
-        "a future run that will not remember this conversation, so write it "
-        "self-contained: what to do, to which chat or account, and what to skip. "
-        "Scheduled runs have nobody attached, so anything needing confirmation is "
-        "refused every time; list the Telegram operations the task will perform in "
-        "'needs' and this tool reports up front whether the policy permits them, which "
-        "is the difference between finding out now and finding out never."
+        "Create a recurring or one-off task that runs this agent with a stored prompt — "
+        "how 'every minute', 'each morning', or 'from now on' becomes real. The prompt "
+        "goes to a future run that remembers nothing of this conversation, so write it "
+        "to stand alone. Name the Telegram operations the task will perform in 'needs': "
+        "a scheduled run has nobody to confirm with, and this reports which of them the "
+        "policy would refuse before the task starts failing every time it fires."
     )
     risk_hint = RiskTier.REVERSIBLE
     parameters = object_schema(
@@ -269,9 +266,9 @@ def unattended_blockers(context: ToolContext, needs: Any) -> list[dict[str, str]
 class ScheduleListTool:
     name = "schedule_list"
     description = (
-        "List the scheduled tasks that exist, with their schedules, whether they are "
-        "enabled, when they next run, and how the last run went. Check this before "
-        "creating a task, so you do not duplicate one that already exists."
+        "The scheduled tasks that exist, with their schedules, whether they are enabled, when "
+        "they next run, and how the last run went. Check before creating one, so a repeated "
+        "request does not become two tasks."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
@@ -308,9 +305,8 @@ class ScheduleListTool:
 class ScheduleDeleteTool:
     name = "schedule_delete"
     description = (
-        "Delete a scheduled task by name, or disable it while keeping its definition "
-        "so it can be re-enabled later. Prefer disabling when the user may want it "
-        "back."
+        "Delete a scheduled task by name, or disable it while keeping its definition. Prefer "
+        "disabling when the user may want it back."
     )
     risk_hint = RiskTier.REVERSIBLE
     parameters = object_schema(

@@ -27,12 +27,9 @@ from tgagent.tools.base import (
 class ApiSearchTool:
     name = "telegram_api_search"
     description = (
-        "Search the Telegram API for methods and their parameters. Use this whenever "
-        "you need an operation the curated telegram_* tools do not cover — it returns "
-        "exact method names, parameter names and types, and how to call them from the "
-        "`python` tool or telegram_invoke. Search by intent ('search messages by date', "
-        "'ban a user', 'export chat invite') or by an exact name ('messages.Search'). "
-        "The index is built from the installed library, so it is never out of date."
+        "Find Telegram API methods and their exact parameters, by intent ('ban a user', 'export "
+        "chat invite') or by name ('messages.Search'). Generated from the installed library, so "
+        "it is never out of date."
     )
     risk_hint = RiskTier.READ_ONLY
     parameters = object_schema(
