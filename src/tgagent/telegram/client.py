@@ -272,7 +272,12 @@ class TelegramClientManager:
         """
         from telethon import events
 
-        def _seen(_update: Any) -> None:
+        # Async, and it must stay async: Telethon *awaits* whatever a handler
+        # returns, so a plain function returns None and every single update
+        # raises `'NoneType' object can't be awaited` inside the dispatch loop.
+        # That produces one logged traceback per update — thousands an hour into
+        # journald, which is its own outage. See test_connection_health.py.
+        async def _seen(_update: Any) -> None:
             self.note_activity()
 
         self._client.add_event_handler(_seen, events.Raw)

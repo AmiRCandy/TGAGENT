@@ -54,6 +54,27 @@ A large number there, or `stale, rebuilding`, is this fault. In the journal:
 ./hermes logs | grep -E "telegram.(probing|connection_stale|connection_rebuilt|giving_up)"
 ```
 
+### Why it only happened under systemd
+
+Two things, and the second is why `screen` and `nohup` looked fine:
+
+1. A monitoring handler was registered as a plain function. Telethon *awaits*
+   whatever a handler returns, so every single update raised
+   `TypeError: 'NoneType' object can't be awaited` — one logged traceback per
+   update. Fixed, with a test that asserts every handler we register is a
+   coroutine function.
+2. Under a service manager stdout is a pipe to the journal. A message repeating
+   per-update writes faster than the journal drains it, and a blocking write from
+   the event loop stalls the whole process: up, idle, answering nothing, with its
+   own logs as the cause. Redirected to a file or a terminal the same build looks
+   healthy. Identical messages are now capped at 20 per minute per
+   `(logger, message)` — distinct messages are never suppressed, and the record at
+   the cap says so.
+
+The unit file also had `StartLimitIntervalSec` in `[Service]`, where systemd
+ignores it and says so in the journal, leaving the restart loop unbounded. It is
+in `[Unit]` now.
+
 If you are on an older unit file, redeploy it — `Restart=on-failure` never fires
 for a process that is hung rather than crashed:
 

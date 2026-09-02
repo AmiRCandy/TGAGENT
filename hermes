@@ -587,6 +587,11 @@ Description=tgagent — Telegram agent (control bridge + scheduler)
 Documentation=file://$ROOT/docs/telegram-control.md
 After=network-online.target
 Wants=network-online.target
+# These belong to [Unit], not [Service] — systemd ignores them there and says so
+# in the journal ("Unknown key 'StartLimitIntervalSec' in section [Service]"),
+# which quietly leaves a restart loop unbounded.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -597,10 +602,9 @@ Environment=TGAGENT_LOGGING__FORMAT=json
 # always, not on-failure: a listener that can no longer hear anything exits 1 on
 # purpose, and even a clean exit should be replaced rather than left stopped.
 Restart=always
+# Telegram rate-limits an account that reconnects in a tight loop, so the burst
+# limit above is what stops a crash loop from costing the account.
 RestartSec=10
-# Telegram rate-limits an account that reconnects in a tight loop.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # The process needs its data directory and nothing else on the filesystem.
 NoNewPrivileges=true

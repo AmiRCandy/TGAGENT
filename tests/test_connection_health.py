@@ -14,6 +14,7 @@ anything has been *heard from* Telegram lately.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +109,11 @@ class TestTellingTheDifference:
 
     async def test_any_update_counts_as_a_sign_of_life(self) -> None:
         """Read receipts and typing notifications prove a connection too, so the
-        stamp comes from a raw handler rather than from the bridge's messages."""
+        stamp comes from a raw handler rather than from the bridge's messages.
+
+        Awaited exactly as Telethon awaits it — see the next test for why calling
+        it any other way is how a broken handler ships.
+        """
         client = DeadSocketClient()
         manager = make_manager(client)
         manager._watch_updates()
@@ -116,9 +121,52 @@ class TestTellingTheDifference:
         assert client.handlers, "no raw handler registered"
         manager._last_seen = 0.0
         callback = client.handlers[0][0]
-        callback(object())
-        assert manager.idle_seconds >= 0.0
+        await callback(object())
         assert manager._last_seen > 0
+
+    async def test_the_handler_is_awaitable(self) -> None:
+        """The regression this exists for, found in production.
+
+        Telethon does `await callback(event)` for every handler. A plain function
+        returns None, `await None` raises TypeError, and the result is one logged
+        traceback *per update* — which under systemd is thousands of lines into
+        journald and an outage of its own. The first version of this test called
+        the handler synchronously and so proved nothing.
+        """
+        import inspect
+
+        client = DeadSocketClient()
+        manager = make_manager(client)
+        manager._watch_updates()
+
+        callback = client.handlers[0][0]
+        assert inspect.iscoroutinefunction(callback), (
+            "the raw update handler must be async: Telethon awaits its return value"
+        )
+        # And awaiting it has to work, not merely be permitted by the signature.
+        assert await callback(object()) is None
+
+
+class TestEveryHandlerWeRegister:
+    """Telethon awaits handlers, so a sync one is a per-update exception.
+
+    Broad on purpose: the bug was in a handler added for monitoring, not in the
+    bridge's own, and the next one added will not be either.
+    """
+
+    def test_no_synchronous_handler_reaches_telethon(self) -> None:
+        import inspect
+
+        client = DeadSocketClient()
+        manager = make_manager(client)
+        manager._watch_updates()
+
+        offenders = [
+            getattr(callback, "__name__", repr(callback))
+            for callback, _event in client.handlers
+            if not inspect.iscoroutinefunction(callback)
+        ]
+        assert offenders == [], f"synchronous Telethon handlers: {offenders}"
 
 
 class TestRecovery:
@@ -211,3 +259,84 @@ class TestSettings:
         for field, value in (("health_check_interval", 0.0), ("idle_probe_after", 1.0)):
             with pytest.raises(ValidationError):
                 TelegramSettings(api_id=1, api_hash="0" * 32, **{field: value})
+
+
+class TestOneMessageCannotFloodTheJournal:
+    """The amplifier that turned a bug into an outage.
+
+    Under a service manager stdout is a pipe to the journal, so a message
+    repeating per-update writes faster than the journal drains — and a blocking
+    write from the event loop stalls everything while the process stays up and
+    idle. The same build under `nohup` writes to a file and looks fine, which is
+    exactly how this hides.
+
+    Driven through `logging` rather than the filter's own method, because the
+    first attempt at this used a structlog processor raising `DropEvent` —
+    which `ProcessorFormatter` does not catch on the foreign-log path, turning
+    every suppressed line into a `--- Logging error ---` traceback. Only an
+    end-to-end assertion catches that.
+    """
+
+    def _captured(self, emit: Any) -> str:
+        import io
+        import logging
+
+        from tgagent.config.settings import LoggingSettings
+        from tgagent.observability.logging import configure_logging
+
+        configure_logging(LoggingSettings(format="json", level="INFO"))
+        buffer = io.StringIO()
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.stream = buffer
+        emit()
+        return buffer.getvalue()
+
+    def test_a_repeating_third_party_message_is_capped(self) -> None:
+        import logging
+
+        def emit() -> None:
+            log = logging.getLogger("telethon.client.updates")
+            log.setLevel(logging.ERROR)
+            for _ in range(200):
+                log.error("Unhandled exception on _seen")
+
+        written = [line for line in self._captured(emit).splitlines() if line.strip()]
+        assert len(written) < 40, f"{len(written)} lines written for 200 events"
+        assert sum("suppressed" in line for line in written) == 1
+
+    def test_suppressing_does_not_itself_become_an_error(self) -> None:
+        """The trap: dropping a record the wrong way logs a traceback per drop."""
+        import logging
+
+        def emit() -> None:
+            log = logging.getLogger("telethon.client.updates")
+            log.setLevel(logging.ERROR)
+            for _ in range(200):
+                log.error("Unhandled exception on _seen")
+
+        assert "--- Logging error ---" not in self._captured(emit)
+
+    def test_a_flood_of_one_thing_does_not_silence_another(self) -> None:
+        """The message that finally explains the problem must not be the one that
+        gets dropped."""
+        import logging
+
+        def emit() -> None:
+            noisy = logging.getLogger("telethon.client.updates")
+            noisy.setLevel(logging.ERROR)
+            for _ in range(200):
+                noisy.error("Unhandled exception on _seen")
+            logging.getLogger("tgagent.app").info("app.stopped")
+
+        assert "app.stopped" in self._captured(emit)
+
+    def test_distinct_messages_are_never_touched(self) -> None:
+        from tgagent.observability.logging import CollapseRepeats
+
+        collapse = CollapseRepeats(limit=5, window=60.0)
+        records = [
+            logging.LogRecord("tgagent", logging.INFO, __file__, 1, f"run.{i}", None, None)
+            for i in range(100)
+        ]
+        assert all(collapse.filter(record) for record in records)

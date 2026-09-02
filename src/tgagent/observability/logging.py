@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
+import time
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,64 @@ def _drop_color_message(
     """uvicorn-style libraries duplicate the message; keep the plain one."""
     event_dict.pop("color_message", None)
     return event_dict
+
+
+class CollapseRepeats(logging.Filter):
+    """Stop one repeating message from becoming an outage.
+
+    Under a service manager, stdout is a pipe to the journal. A message repeating
+    per-update — a library raising on every event, say — writes faster than the
+    journal drains it, and a blocking write from the event loop then stalls
+    everything: the process stays up, uses no CPU, answers nothing, and its own
+    logs are the reason. Redirected to a file or a terminal the same build looks
+    fine, which is why this hides under `nohup` and bites under systemd.
+
+    A ``logging.Filter`` rather than a structlog processor, and that is not a
+    style choice: a processor signals a drop by raising ``structlog.DropEvent``,
+    which ``ProcessorFormatter`` does **not** catch on the foreign-log path. The
+    flood arrives through exactly that path, so raising there turns every dropped
+    line into a `--- Logging error ---` traceback — louder than what it replaced.
+    Returning ``False`` from a filter is the supported way to discard a record,
+    and it covers this project's own events too, since they are emitted through
+    the stdlib logger factory.
+
+    Only the ``(logger, message)`` pair is compared, so a flood of one thing never
+    suppresses anything else, and the record at the cap carries a note so silence
+    is not mistaken for calm. The audit trail is a database table and is
+    untouched by any of this.
+    """
+
+    def __init__(self, *, limit: int = 20, window: float = 60.0) -> None:
+        super().__init__()
+        self._limit = limit
+        self._window = window
+        self._counts: dict[tuple[str, str], int] = {}
+        self._started = 0.0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        now = time.monotonic()
+        if now - self._started > self._window:
+            self._counts.clear()
+            self._started = now
+
+        key = (record.name, str(record.msg)[:160])
+        seen = self._counts.get(key, 0) + 1
+        self._counts[key] = seen
+
+        if seen < self._limit:
+            return True
+        if seen > self._limit:
+            return False
+
+        note = f" [repeated {seen}x; further identical messages suppressed for {self._window:.0f}s]"
+        if isinstance(record.msg, dict):
+            # A structlog event dict on its way to ProcessorFormatter.
+            record.msg = {**record.msg, "event": f"{record.msg.get('event', '')}{note}"}
+        else:
+            # Flatten first: appending to a format string would break its args.
+            record.msg = f"{record.getMessage()}{note}"
+            record.args = ()
+        return True
 
 
 @dataclass(slots=True)
@@ -101,8 +160,13 @@ def configure_logging(settings: LoggingSettings | _DefaultLogging | None = None)
     for handler in list(root.handlers):
         root.removeHandler(handler)
 
+    # One filter instance, shared: the cap is on what gets written anywhere, not
+    # per destination.
+    throttle = CollapseRepeats()
+
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(formatter)
+    stream_handler.addFilter(throttle)
     root.addHandler(stream_handler)
 
     if settings.file is not None:
@@ -122,6 +186,7 @@ def configure_logging(settings: LoggingSettings | _DefaultLogging | None = None)
                 ],
             )
         )
+        file_handler.addFilter(throttle)
         root.addHandler(file_handler)
 
     root.setLevel(settings.level)
