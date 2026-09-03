@@ -581,9 +581,11 @@ require_systemd() {
   command -v systemctl >/dev/null 2>&1 || die "systemd is not available on this machine."
 }
 
-write_unit() {
-  mkdir -p "$UNIT_DIR"
-  cat >"$UNIT_PATH" <<UNIT
+# Rendering is separate from writing so `status` can compare the installed unit
+# against this version: "your deployed unit is out of date" is otherwise an
+# invisible state, and it is the reason a fixed template can look unfixed.
+render_unit() {
+  cat <<UNIT
 [Unit]
 Description=tgagent — Telegram agent (control bridge + scheduler)
 Documentation=file://$ROOT/docs/telegram-control.md
@@ -624,6 +626,11 @@ WantedBy=default.target
 UNIT
 }
 
+write_unit() {
+  mkdir -p "$UNIT_DIR"
+  render_unit >"$UNIT_PATH"
+}
+
 cmd_deploy() {
   require_venv
   require_env_file
@@ -644,13 +651,17 @@ cmd_deploy() {
   # `nohup` runs for weeks because those processes live in the session scope
   # instead. Warning about it was not enough — a warning in a wall of deploy
   # output is a warning nobody reads.
-  ensure_linger
-
+  # The unit is written first, on purpose. Enabling lingering can fail — no
+  # logind, no sudo, a container — and when that check ran first, its refusal
+  # left the *old* unit installed. Which is how a template fixed in git keeps
+  # producing the same warning from systemd: the file on disk was never replaced.
   step "Installing the user service at $UNIT_PATH"
   write_unit
   systemctl --user daemon-reload
   systemctl --user enable "$SERVICE_NAME.service"
   systemctl --user restart "$SERVICE_NAME.service"
+
+  ensure_linger
 
   printf '\n'
   ok "Deployed. It will start again on boot and restart on failure."
@@ -710,6 +721,10 @@ cmd_undeploy() {
 
 cmd_status() {
   require_systemd
+  if [ -f "$UNIT_PATH" ] && ! render_unit | diff -q - "$UNIT_PATH" >/dev/null 2>&1; then
+    warn "The installed unit is out of date — this version of hermes writes a different one."
+    hint "./hermes deploy   (a restart does not rewrite it)"
+  fi
   if linger_on; then
     ok "Lingering: on (survives logout)"
   else
