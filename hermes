@@ -25,6 +25,8 @@ readonly VENV="$ROOT/.venv"
 readonly PY="$VENV/bin/python"
 readonly ENV_FILE="$ROOT/.env"
 readonly SERVICE_NAME="tgagent"
+# $USER is not exported by every shell (cron, some SSH setups); ask the system.
+readonly LINGER_USER="${USER:-$(id -un)}"
 
 # Minimum interpreter the project supports (pyproject: requires-python >=3.11).
 readonly MIN_PY_MINOR=11
@@ -635,23 +637,63 @@ cmd_deploy() {
     die "Configuration is incomplete. Fix .env, then run ./hermes deploy again."
   fi
 
+  # Lingering first, and it is not optional. Without it systemd stops the whole
+  # user manager when your last session ends, taking every --user service with
+  # it: the journal shows an orderly "Stopping tgagent.service", the user
+  # manager comes back with a new PID next login, and the same build under
+  # `nohup` runs for weeks because those processes live in the session scope
+  # instead. Warning about it was not enough — a warning in a wall of deploy
+  # output is a warning nobody reads.
+  ensure_linger
+
   step "Installing the user service at $UNIT_PATH"
   write_unit
   systemctl --user daemon-reload
   systemctl --user enable "$SERVICE_NAME.service"
   systemctl --user restart "$SERVICE_NAME.service"
 
-  # Without this, the service stops when the last session for the user ends.
-  if ! loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -q 'Linger=yes'; then
-    warn "Lingering is off, so the service will stop when you log out."
-    hint "enable it with: sudo loginctl enable-linger $USER"
-  fi
-
   printf '\n'
   ok "Deployed. It will start again on boot and restart on failure."
   hint "status: ./hermes status   ·   logs: ./hermes logs   ·   stop: ./hermes undeploy"
   printf '\n'
   systemctl --user --no-pager --lines=0 status "$SERVICE_NAME.service" || true
+}
+
+linger_on() {
+  loginctl show-user "$LINGER_USER" --property=Linger 2>/dev/null | grep -q 'Linger=yes'
+}
+
+ensure_linger() {
+  if linger_on; then
+    ok "Lingering is on: the service survives logout."
+    return 0
+  fi
+
+  step "Enabling lingering for $LINGER_USER"
+  loginctl enable-linger "$LINGER_USER" 2>/dev/null ||
+    sudo loginctl enable-linger "$LINGER_USER" 2>/dev/null || true
+
+  if linger_on; then
+    ok "Lingering enabled."
+    return 0
+  fi
+
+  # Refusing beats deploying something that provably dies at logout.
+  warn "Could not enable lingering for $LINGER_USER."
+  printf '
+'
+  printf '  Without it, systemd stops this service the moment your session ends,
+'
+  printf '  which looks exactly like the agent crashing for no reason.
+
+'
+  printf '  Run this, then deploy again:
+
+'
+  printf '      %ssudo loginctl enable-linger %s%s
+
+' "$C_BOLD" "$LINGER_USER" "$C_RESET"
+  die "Refusing to install a service that will not outlive this login."
 }
 
 cmd_undeploy() {
@@ -668,6 +710,12 @@ cmd_undeploy() {
 
 cmd_status() {
   require_systemd
+  if linger_on; then
+    ok "Lingering: on (survives logout)"
+  else
+    warn "Lingering: OFF — this service dies when your session ends."
+    hint "sudo loginctl enable-linger $LINGER_USER"
+  fi
   systemctl --user --no-pager status "$SERVICE_NAME.service" || true
 }
 

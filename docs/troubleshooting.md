@@ -18,6 +18,40 @@ Logs are redacted automatically, but read them before pasting anywhere.
 
 ---
 
+## It stops a while after I log out of SSH
+
+The journal shows an orderly stop, not a crash:
+
+```
+systemd[94497]: Stopping tgagent.service...
+systemd[94497]: Stopped tgagent.service.
+tgagent.service: Consumed 2.249s CPU time over 22min 36.554s wall clock time
+```
+
+and the same build under `nohup` runs for weeks.
+
+**Lingering is off.** A `systemctl --user` service belongs to your *user
+manager*, and systemd stops that when your last session ends — taking every
+`--user` unit with it. `nohup` survives because those processes live in the
+session scope instead, which `KillUserProcesses=no` leaves alone.
+
+Two tells confirm it:
+
+- the message is **Stopping**, not a failure or an exit code — nothing crashed;
+- the `systemd[…]` PID differs between runs, because the user manager itself
+  exited and came back at your next login.
+
+Fix it once:
+
+```bash
+sudo loginctl enable-linger "$(id -un)"
+./hermes deploy
+```
+
+`./hermes deploy` now enables lingering itself and refuses to install the service
+if it cannot, and `./hermes status` reports the state — this failure looks so much
+like a crash that it is worth checking first.
+
 ## It ran for half an hour and then stopped answering
 
 The logs still say it is running, `systemctl --user status tgagent` is green, and
