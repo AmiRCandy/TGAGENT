@@ -86,8 +86,12 @@ class Application:
         self.media: MediaManager | None = None
         self.sandbox: SandboxRunner | None = None
         self.scheduler: Scheduler | None = None
-        self.registry: ToolRegistry = build_default_registry(self.settings)
+        self.registry: ToolRegistry = build_default_registry(
+            self.settings, audit=self.storage.audit
+        )
         self.account: dict[str, Any] | None = None
+        #: Tool names contributed by plugins, so a reload can take them back out.
+        self._plugin_tools: set[str] = set()
 
         self._started = False
         self._telegram_connected = False
@@ -195,6 +199,31 @@ class Application:
             if key := self.settings.llm.api_key:
                 secret_registry.register(key.get_secret_value())
         return self._provider
+
+    def reload_plugins(self) -> list[Any]:
+        """Re-read the plugin state and rebuild what the model can see.
+
+        Called after an install or a toggle so a plugin becomes available without
+        a restart: the registry is shared with every runtime built afterwards,
+        and `build_runtime` is called per run. Tools belonging to a plugin that
+        is now off are unregistered, which is the half that a naive "just add the
+        new ones" would miss.
+        """
+        from tgagent.tools import register_plugin_tools
+
+        for name in list(self._plugin_tools):
+            self.registry.unregister(name)
+        self._plugin_tools = set()
+
+        report = register_plugin_tools(self.registry, self.settings, audit=self.storage.audit)
+        for entry in report:
+            self._plugin_tools.update(tool.name for tool in entry.tools)
+        log.info(
+            "app.plugins_reloaded",
+            loaded=[entry.manifest.name for entry in report if entry.ok],
+            tools=len(self._plugin_tools),
+        )
+        return report
 
     def reload_llm(self) -> None:
         """Drop the cached provider so the next run builds one from settings.

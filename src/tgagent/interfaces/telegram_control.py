@@ -118,7 +118,7 @@ _UNWATCH_WORDS = frozenset(
 #: Administration, matched as the *first word* because these take arguments.
 #: Owner-only, and answered here rather than by a tool — see
 #: :mod:`tgagent.interfaces.admin` for why that distinction is the security model.
-_ADMIN_WORDS = frozenset({"policy", "permissions", "llm", "model"})
+_ADMIN_WORDS = frozenset({"policy", "permissions", "llm", "model", "plugin", "plugins"})
 #: "I am about to be unreachable." Answered without the model, because you are
 #: boarding.
 _FLIGHT_WORDS = frozenset({"flight", "away", "afk"})
@@ -988,11 +988,13 @@ class TelegramControlBridge:
             return
 
         try:
-            result = (
-                self._admin.policy(argument)
-                if head in ("policy", "permissions")
-                else self._admin.llm(argument)
-            )
+            if head in ("policy", "permissions"):
+                result = self._admin.policy(argument)
+            elif head in ("plugin", "plugins"):
+                # Awaited: installing one clones a repository.
+                result = await self._admin.plugins(argument)
+            else:
+                result = self._admin.llm(argument)
         except TgAgentError as exc:
             await self._reply(source, f"❌ {exc.user_message}")
             return

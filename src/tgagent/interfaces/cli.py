@@ -62,7 +62,9 @@ autoreply_app = typer.Typer(
 )
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(config_app, name="config")
+plugins_app = typer.Typer(help="Extra tools: install, inspect, switch off.", no_args_is_help=True)
 app.add_typer(autoreply_app, name="autoreply")
+app.add_typer(plugins_app, name="plugins")
 
 _RISK_STYLE = {
     RiskTier.READ_ONLY: "green",
@@ -92,7 +94,12 @@ def _build_admin(application: Application, settings: Settings) -> RuntimeAdmin:
     Given the live permission engine and settings, so a change takes effect in this
     process rather than only in a file waiting for a restart.
     """
-    return RuntimeAdmin(settings, application.permissions, on_llm_changed=application.reload_llm)
+    return RuntimeAdmin(
+        settings,
+        application.permissions,
+        on_llm_changed=application.reload_llm,
+        on_plugins_changed=application.reload_plugins,
+    )
 
 
 def _run(coro: Any) -> Any:
@@ -651,6 +658,146 @@ def autoreply_stop(
             )
         finally:
             await application.stop()
+
+    _run(main())
+
+
+# --------------------------------------------------------------- plugins ----
+@plugins_app.command("list")
+def plugins_list() -> None:
+    """What is installed, what is loading, and why anything is not."""
+
+    async def main() -> None:
+        from tgagent.plugins import load_plugins
+
+        settings = load_settings()
+        _tools, report = load_plugins(settings)
+        if not report:
+            console.print("[dim]No plugins available.[/dim]")
+            return
+
+        table = Table(title="Plugins")
+        for column in ("Name", "Version", "Source", "Status", "Tools"):
+            table.add_column(column)
+        for entry in report:
+            manifest, record = entry.manifest, entry.installed
+            if entry.ok:
+                status = "[green]loaded[/green]"
+            elif not record.enabled:
+                status = "[dim]off[/dim]"
+            else:
+                status = f"[yellow]{entry.error}[/yellow]"
+            table.add_row(
+                manifest.name,
+                manifest.version,
+                "built in" if record.builtin else record.source,
+                status,
+                ", ".join(tool.name for tool in entry.tools) or ", ".join(manifest.tools),
+            )
+        console.print(table)
+        console.print(
+            "[dim]A plugin runs inside the agent with your account's access. "
+            "See docs/plugins.md.[/dim]"
+        )
+
+    _run(main())
+
+
+@plugins_app.command("add")
+def plugins_add(
+    url: Annotated[str, typer.Argument(help="Git URL, or owner/repo on GitHub.")],
+    ref: Annotated[str | None, typer.Option("--ref", help="Branch or tag to install.")] = None,
+) -> None:
+    """Install a plugin from a git repository."""
+
+    async def main() -> None:
+        from tgagent.plugins import PluginState, install
+
+        settings = load_settings()
+        settings.ensure_directories()
+        console.print(
+            "[yellow]This fetches code that will run inside the agent, with the same "
+            "access to your account and keys as the agent itself.[/yellow]"
+        )
+        if not Confirm.ask(f"Install {url}?", default=False):
+            console.print("[dim]Left alone.[/dim]")
+            return
+
+        outcome = await install(
+            url,
+            state=PluginState(settings.data_dir),
+            trusted_hosts=settings.plugins.trusted_hosts,
+            max_installed=settings.plugins.max_installed,
+            ref=ref or "",
+        )
+        console.print(
+            f"[green]Installed[/green] {outcome.manifest.name} {outcome.manifest.version} "
+            f"(commit {outcome.record.ref[:12] or 'unknown'})"
+        )
+        console.print(f"[dim]{outcome.manifest.description}[/dim]")
+        console.print("Restart the listener, or run `agent plugin list` in a chat, to use it.")
+
+    _run(main())
+
+
+@plugins_app.command("remove")
+def plugins_remove(
+    name: Annotated[str, typer.Argument(help="The plugin's name.")],
+) -> None:
+    """Delete an installed plugin, or switch off a built-in one."""
+
+    async def main() -> None:
+        from tgagent.plugins import PluginState, remove
+
+        settings = load_settings()
+        state = PluginState(settings.data_dir)
+        if remove(name, state=state):
+            console.print(f"[green]Removed[/green] {name} and deleted its files.")
+        else:
+            console.print(
+                f"[green]Switched off[/green] {name} — it ships with tgagent, so there "
+                f"is nothing to delete."
+            )
+
+    _run(main())
+
+
+@plugins_app.command("toggle")
+def plugins_toggle(
+    name: Annotated[str, typer.Argument(help="The plugin's name.")],
+    on: Annotated[bool, typer.Option("--on/--off", help="Switch it on or off.")] = True,
+) -> None:
+    """Switch a plugin on or off without deleting it."""
+
+    async def main() -> None:
+        from tgagent.plugins import PluginState, ensure_record
+
+        settings = load_settings()
+        state = PluginState(settings.data_dir)
+        ensure_record(state, name, settings=settings)
+        state.set_enabled(name, on)
+        console.print(f"[green]{name}[/green] is now {'on' if on else 'off'}.")
+
+    _run(main())
+
+
+@plugins_app.command("set")
+def plugins_set(
+    name: Annotated[str, typer.Argument(help="The plugin's name.")],
+    key: Annotated[str, typer.Argument(help="Config key, e.g. api_key.")],
+    value: Annotated[str, typer.Argument(help="The value.")],
+) -> None:
+    """Configure a plugin — an API key, a limit."""
+
+    async def main() -> None:
+        from tgagent.interfaces.admin import _coerce
+        from tgagent.plugins import PluginState, ensure_record
+
+        settings = load_settings()
+        state = PluginState(settings.data_dir)
+        ensure_record(state, name, settings=settings)
+        state.set_config(name, {key: _coerce(value)})
+        console.print(f"[green]{name}[/green]: {key} set.")
 
     _run(main())
 

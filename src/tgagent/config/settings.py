@@ -506,6 +506,33 @@ class AutoReplySettings(BaseModel):
     typing_indicator: bool = Field(default=True)
 
 
+class PluginSettings(BaseModel):
+    """Tools somebody else wrote. See ``docs/plugins.md``.
+
+    A plugin runs in this process with this account's credentials — it is not the
+    sandbox. These settings bound the surface: what may be installed, from where,
+    and how much of the model's tool list any one plugin can occupy.
+    """
+
+    #: Master switch. Off means no plugin tools at all, built-in ones included.
+    enabled: bool = Field(default=True)
+    #: Whether the plugins that ship with tgagent start switched on. They still
+    #: do nothing until their requirements are installed and configured.
+    builtins_enabled: bool = Field(default=True)
+    #: Whether `agent plugin add` may fetch code at all. Off makes the set of
+    #: plugins whatever is already on disk — a reasonable stance for a shared or
+    #: unattended deployment.
+    allow_install: bool = Field(default=True)
+    #: Hosts a plugin may be installed from. https only, checked before fetching.
+    trusted_hosts: list[str] = Field(
+        default_factory=lambda: ["github.com", "gitlab.com", "codeberg.org"]
+    )
+    max_installed: int = Field(default=20, ge=1, le=200)
+    #: One plugin should not be able to double the tool array on its own; every
+    #: schema is re-read on every request.
+    max_tools_per_plugin: int = Field(default=12, ge=1, le=64)
+
+
 class SchedulerSettings(BaseModel):
     """Background task scheduling."""
 
@@ -554,6 +581,7 @@ class Settings(BaseSettings):
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     control: TelegramControlSettings = Field(default_factory=TelegramControlSettings)
     autoreply: AutoReplySettings = Field(default_factory=AutoReplySettings)
+    plugins: PluginSettings = Field(default_factory=PluginSettings)
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @model_validator(mode="after")

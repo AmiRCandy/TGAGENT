@@ -105,9 +105,13 @@ class RuntimeAdmin:
         permissions: PermissionEngine,
         *,
         on_llm_changed: Callable[[], None] | None = None,
+        on_plugins_changed: Callable[[], Any] | None = None,
     ) -> None:
         self._settings = settings
         self._permissions = permissions
+        #: Rebuilds the tool registry after a plugin changes, so `plugin add`
+        #: does not need a restart to mean anything.
+        self._on_plugins_changed = on_plugins_changed
         #: Called after a model setting changes, so the next run builds a fresh
         #: provider. Without it the process would report a new model and keep
         #: using the old one, which is worse than refusing the change.
@@ -390,6 +394,233 @@ class RuntimeAdmin:
             f"`{trigger} llm reset model` — back to the environment's value"
         )
 
+    # -------------------------------------------------------------- plugins ---
+    async def plugins(self, argument: str) -> AdminResult:
+        """Handle ``plugin``, ``plugin add|remove|on|off|set|info``.
+
+        Async because installing one clones a repository. Owner-only for the same
+        reason as everything else here, and more so: a plugin is code that will
+        run with this account's credentials.
+        """
+        from tgagent.plugins import PluginError, PluginState
+
+        words = argument.split()
+        state = PluginState(self._settings.data_dir)
+        verb = words[0].casefold() if words else "list"
+        rest = words[1:]
+
+        try:
+            if verb in ("", "list", "ls", "status"):
+                return AdminResult(await self._plugin_list(state))
+            if verb in ("add", "install"):
+                return await self._plugin_add(state, rest)
+            if verb in ("remove", "rm", "uninstall", "delete"):
+                return await self._plugin_remove(state, rest)
+            if verb in ("on", "enable"):
+                return await self._plugin_toggle(state, rest, enabled=True)
+            if verb in ("off", "disable"):
+                return await self._plugin_toggle(state, rest, enabled=False)
+            if verb == "set":
+                return await self._plugin_set(state, rest)
+            if verb == "info":
+                return AdminResult(await self._plugin_info(state, rest))
+        except PluginError as exc:
+            return AdminResult(f"\u274c {exc.user_message}")
+
+        return AdminResult(self._plugin_usage(f"I do not know what {verb!r} means here."))
+
+    async def _plugin_list(self, state: Any) -> str:
+        from tgagent.plugins import load_plugins
+
+        _tools, report = load_plugins(self._settings)
+        if not report:
+            return "No plugins are available in this deployment."
+
+        trigger = self._trigger()
+        lines = ["**Plugins**"]
+        for entry in report:
+            manifest, record = entry.manifest, entry.installed
+            mark = "\u2705" if entry.ok else ("\u23f8" if not record.enabled else "\u26a0\ufe0f")
+            origin = "built in" if record.builtin else record.source
+            lines.append(f"{mark} **{manifest.name}** `{manifest.version}` \u00b7 {origin}")
+            lines.append(f"   {manifest.description}")
+            if entry.ok:
+                lines.append("   tools: " + ", ".join(f"`{tool.name}`" for tool in entry.tools))
+            else:
+                lines.append(f"   _{entry.error}_")
+        lines.append(
+            f"\n`{trigger} plugin add <url>` \u00b7 `off <name>` \u00b7 `on <name>` \u00b7 "
+            f"`set <name> <key> <value>` \u00b7 `info <name>`"
+        )
+        return "\n".join(lines)
+
+    async def _plugin_add(self, state: Any, words: list[str]) -> AdminResult:
+        from tgagent.plugins import install
+
+        if not self._settings.plugins.allow_install:
+            return AdminResult(
+                "\u274c Installing plugins is switched off here "
+                "(`plugins.allow_install`), so the set of plugins is whatever is "
+                "already on disk."
+            )
+        if not words:
+            return AdminResult(self._plugin_usage("Give me the plugin's git URL."))
+
+        settings = self._settings.plugins
+        outcome = await install(
+            words[0],
+            state=state,
+            trusted_hosts=settings.trusted_hosts,
+            max_installed=settings.max_installed,
+            ref=words[1] if len(words) > 1 else "",
+        )
+        report = self._reload_plugins()
+        loaded = next((e for e in report if e.manifest.name == outcome.manifest.name), None)
+
+        lines = [
+            f"\u2705 Installed **{outcome.manifest.name}** `{outcome.manifest.version}`"
+            + (" (replacing what was there)" if outcome.replaced else ""),
+            f"   {outcome.manifest.description}",
+            f"   commit `{outcome.record.ref[:12] or 'unknown'}`",
+        ]
+        if loaded is not None and loaded.ok:
+            lines.append("   tools: " + ", ".join(f"`{t.name}`" for t in loaded.tools))
+            lines.append("\nAvailable now — no restart needed.")
+        elif loaded is not None:
+            lines.append(f"   \u26a0\ufe0f not loaded: {loaded.error}")
+        lines.append(
+            "\n\u26a0\ufe0f This code now runs inside the agent, with the same access to "
+            "your account and keys as the agent itself. `plugin off` stops it."
+        )
+        return AdminResult("\n".join(lines), changed=True)
+
+    async def _plugin_remove(self, state: Any, words: list[str]) -> AdminResult:
+        from tgagent.plugins import remove
+
+        if not words:
+            return AdminResult(self._plugin_usage("Which plugin?"))
+        name = words[0]
+        deleted = remove(name, state=state)
+        self._reload_plugins()
+        if deleted:
+            return AdminResult(f"\u2705 Removed **{name}** and deleted its files.", changed=True)
+        return AdminResult(
+            f"\u2705 **{name}** ships with tgagent, so it is switched off rather than "
+            f"deleted. `{self._trigger()} plugin on {name}` brings it back.",
+            changed=True,
+        )
+
+    async def _plugin_toggle(self, state: Any, words: list[str], *, enabled: bool) -> AdminResult:
+        from tgagent.plugins import ensure_record
+
+        if not words:
+            return AdminResult(self._plugin_usage("Which plugin?"))
+        name = words[0]
+        # A built-in with no row yet is "default", not "missing".
+        ensure_record(state, name, settings=self._settings)
+        state.set_enabled(name, enabled)
+        report = self._reload_plugins()
+        entry = next((e for e in report if e.manifest.name == name), None)
+
+        if not enabled:
+            return AdminResult(
+                f"\u2705 **{name}** is off. Its tools are gone from my list.", changed=True
+            )
+        if entry is not None and entry.ok:
+            tools = ", ".join(f"`{t.name}`" for t in entry.tools)
+            return AdminResult(f"\u2705 **{name}** is on. Tools: {tools}", changed=True)
+        detail = entry.error if entry is not None else "it is not installed"
+        return AdminResult(f"\u26a0\ufe0f **{name}** is on but not loading: {detail}", changed=True)
+
+    async def _plugin_set(self, state: Any, words: list[str]) -> AdminResult:
+        from tgagent.plugins import ensure_record
+
+        if len(words) < 3:
+            return AdminResult(
+                self._plugin_usage(
+                    f"Say which plugin, which key, and the value: "
+                    f"`{self._trigger()} plugin set web-search api_key sk-...`"
+                )
+            )
+        name, key, value = words[0], words[1], " ".join(words[2:])
+        ensure_record(state, name, settings=self._settings)
+        state.set_config(name, {key: _coerce(value)})
+        self._reload_plugins()
+
+        secret = any(hint in key.lower() for hint in ("key", "token", "secret", "password"))
+        shown = mask(value) if secret else f"`{value}`"
+        message = [f"\u2705 **{name}**: {key} \u2192 {shown}"]
+        if secret:
+            message.append("_I deleted your message so the key is not left in this chat._")
+        return AdminResult("\n".join(message), changed=True, contained_secret=secret)
+
+    async def _plugin_info(self, state: Any, words: list[str]) -> str:
+        from tgagent.plugins import load_plugins, missing_requirements
+
+        if not words:
+            return self._plugin_usage("Which plugin?")
+        name = words[0]
+        _tools, report = load_plugins(self._settings)
+        entry = next((e for e in report if e.manifest.name == name), None)
+        if entry is None:
+            return f"No plugin named {name!r}. `{self._trigger()} plugin list` shows them."
+
+        manifest, record = entry.manifest, entry.installed
+        lines = [
+            f"**{manifest.name}** `{manifest.version}`",
+            manifest.description or "_no description_",
+            f"\u00b7 source: {'built in' if record.builtin else record.source}",
+            f"\u00b7 enabled: {'yes' if record.enabled else 'no'}",
+            f"\u00b7 status: {'loaded' if entry.ok else entry.error}",
+        ]
+        if record.ref:
+            lines.append(f"\u00b7 commit: `{record.ref[:12]}`")
+        if manifest.tools:
+            lines.append("\u00b7 tools: " + ", ".join(f"`{t}`" for t in manifest.tools))
+        if manifest.requires:
+            missing = missing_requirements(manifest)
+            state_text = "all present" if not missing else f"missing {', '.join(missing)}"
+            lines.append(f"\u00b7 requires: {', '.join(manifest.requires)} \u2014 {state_text}")
+        if record.config:
+            shown = {
+                key: (mask(str(value)) if _is_secret(key) else value)
+                for key, value in record.config.items()
+            }
+            lines.append(f"\u00b7 config: {shown}")
+        if manifest.homepage:
+            lines.append(f"\u00b7 {manifest.homepage}")
+        return "\n".join(lines)
+
+    def _plugin_usage(self, problem: str) -> str:
+        trigger = self._trigger()
+        return (
+            f"{problem}\n\n"
+            f"`{trigger} plugin list` \u2014 what is installed, and what is loading\n"
+            f"`{trigger} plugin add owner/repo` \u2014 install from GitHub\n"
+            f"`{trigger} plugin off web-search` \u2014 stop it without deleting it\n"
+            f"`{trigger} plugin on web-search` \u2014 start it again\n"
+            f"`{trigger} plugin set web-search api_key sk-\u2026` \u2014 configure it\n"
+            f"`{trigger} plugin remove <name>` \u2014 delete it\n"
+            f"`{trigger} plugin info <name>` \u2014 everything about one\n\n"
+            f"A plugin runs inside the agent with your account's access. Install only "
+            f"what you would trust with the account itself."
+        )
+
+    def _reload_plugins(self) -> list[Any]:
+        """Rebuild the live tool list, and report what loading found.
+
+        The hook's job is to update the registry in the running process; the
+        report always comes from the loader. Reading the answer out of the hook's
+        return value instead made an un-wired hook look like a failed plugin —
+        "is on but not installed" about a plugin that was plainly installed.
+        """
+        from tgagent.plugins import load_plugins
+
+        if self._on_plugins_changed is not None:
+            self._on_plugins_changed()
+        _tools, report = load_plugins(self._settings)
+        return list(report)
+
     # --------------------------------------------------------------- shared ---
     def _trigger(self) -> str:
         return self._settings.control.trigger
@@ -406,3 +637,29 @@ class RuntimeAdmin:
 
 
 __all__ = ["AdminResult", "RuntimeAdmin"]
+
+
+def _is_secret(key: str) -> bool:
+    return any(hint in key.lower() for hint in ("key", "token", "secret", "password"))
+
+
+def _coerce(value: str) -> Any:
+    """Turn a chat-typed value into the obvious type.
+
+    `max_megabytes 50` should store 50, not "50" — a plugin reading its own
+    config should not have to guess whether the operator typed it or the manifest
+    declared it.
+    """
+    text = value.strip()
+    if text.lower() in ("true", "yes", "on"):
+        return True
+    if text.lower() in ("false", "no", "off"):
+        return False
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
