@@ -195,7 +195,7 @@ class PermissionSettings(BaseModel):
         default_factory=lambda: {
             RiskTier.READ_ONLY: PolicyDecision.ALLOW,
             RiskTier.REVERSIBLE: PolicyDecision.ALLOW,
-            RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.ALLOW,
+            RiskTier.EXTERNALLY_VISIBLE: PolicyDecision.CONFIRM,
             RiskTier.DESTRUCTIVE: PolicyDecision.CONFIRM,
             RiskTier.ACCOUNT_SECURITY: PolicyDecision.DENY,
         }

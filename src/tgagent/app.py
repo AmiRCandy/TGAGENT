@@ -24,7 +24,7 @@ from tgagent.config.policy import resolve_permissions
 from tgagent.config.settings import Settings, load_settings
 from tgagent.errors import ConfigError, TgAgentError
 from tgagent.llm.base import LLMProvider
-from tgagent.llm.registry import create_provider
+from tgagent.llm.registry import create_provider, missing_sdk
 from tgagent.observability.logging import configure_logging, get_logger
 from tgagent.observability.redaction import secret_registry
 from tgagent.sandbox import create_sandbox
@@ -125,6 +125,15 @@ class Application:
                 self.storage.tasks, self._run_scheduled_task, self.settings.scheduler
             )
             await self.scheduler.start()
+
+        if install := missing_sdk(self.settings.llm):
+            # Loud, because the alternative is a service that starts, reports
+            # itself healthy, and fails on the first message somebody sends.
+            log.error(
+                "app.llm_sdk_missing",
+                provider=self.settings.llm.provider,
+                install=install,
+            )
 
         self._started = True
         log.info(

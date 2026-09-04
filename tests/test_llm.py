@@ -22,7 +22,12 @@ from tgagent.llm.providers.fake import (
     text_completion,
     tool_call_completion,
 )
-from tgagent.llm.registry import available_providers, create_provider, register_provider
+from tgagent.llm.registry import (
+    available_providers,
+    create_provider,
+    missing_sdk,
+    register_provider,
+)
 from tgagent.llm.retry import compute_delay, retry_async
 from tgagent.llm.tokens import build_budget, estimate_messages_tokens, estimate_text_tokens
 
@@ -326,3 +331,31 @@ class TestErrorClassification:
     def test_an_already_translated_error_passes_through(self) -> None:
         original = LLMConfigError("already classified")
         assert self._provider()._translate_error(original) is original
+
+
+class TestTheSdkPreflight:
+    """A provider is built on the first message, not at startup.
+
+    So a deployment installed without its SDK starts cleanly, logs nothing
+    alarming, and fails the first time somebody asks it something. This is the
+    check that turns that into one line before anybody has sent anything.
+    """
+
+    def test_an_installed_sdk_is_not_complained_about(self) -> None:
+        pytest.importorskip("anthropic")
+        assert missing_sdk(LLMSettings(provider="anthropic")) is None
+
+    def test_an_absent_sdk_becomes_an_install_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+
+        # `None` in sys.modules is the documented way to make an import fail,
+        # so this holds whether or not the SDK is installed here.
+        monkeypatch.setitem(sys.modules, "anthropic", None)
+        assert missing_sdk(LLMSettings(provider="anthropic")) == 'pip install "tgagent[anthropic]"'
+
+    def test_a_provider_somebody_else_registered_is_not_second_guessed(self) -> None:
+        """It brings its own dependencies; guessing a pip command would be wrong."""
+        assert missing_sdk(LLMSettings(provider="fake")) is None
+        assert missing_sdk(LLMSettings(provider="something-custom")) is None
