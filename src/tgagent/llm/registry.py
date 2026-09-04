@@ -39,6 +39,37 @@ def available_providers() -> list[str]:
     return sorted(_REGISTRY)
 
 
+#: The import name and pip extra for each built-in provider's SDK. Providers
+#: registered by other code are absent and assumed to bring their own.
+_SDKS: dict[str, tuple[str, str]] = {
+    "anthropic": ("anthropic", "anthropic"),
+    "openai": ("openai", "openai"),
+}
+
+
+def missing_sdk(settings: LLMSettings) -> str | None:
+    """The install command the configured provider needs, if it is not importable.
+
+    A provider is constructed on first use, which keeps startup cheap but means
+    a deployment with no SDK installed starts cleanly and then fails on the
+    first message - the failure mode where the logs say "running" and nothing
+    works. Checking the import costs nothing and turns that into one line at
+    startup, before anybody has sent anything.
+    """
+    from importlib.util import find_spec
+
+    entry = _SDKS.get(settings.provider.strip().lower())
+    if entry is None:
+        return None
+    module, extra = entry
+    try:
+        if find_spec(module) is not None:
+            return None
+    except (ImportError, ValueError):
+        pass
+    return f'pip install "tgagent[{extra}]"'
+
+
 def create_provider(settings: LLMSettings) -> LLMProvider:
     """Instantiate the provider named by ``settings.provider``."""
     key = settings.provider.strip().lower()

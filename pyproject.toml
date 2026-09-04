@@ -53,7 +53,7 @@ dependencies = [
   # zoneinfo reads the *system* tz database, which Windows lacks entirely and
   # slim Linux images frequently omit. Bundling it makes cron schedules with a
   # timezone work identically everywhere.
-  "tzdata>=2024.1",
+  "tzdata>=2024.1"
 ]
 
 [project.optional-dependencies]
@@ -63,7 +63,10 @@ openai = ["openai>=1.40"]
 speedups = ["cryptg>=0.4"]
 # SOCKS/HTTP proxy support for the MTProto connection.
 proxy = ["PySocks>=1.7"]
-all = ["tgagent[anthropic,openai,speedups,proxy]"]
+# The youtube plugin. Kept optional: it is large, it moves fast enough that a
+# pin goes stale in weeks, and most people never download a video.
+youtube = ["yt-dlp>=2024.8"]
+all = ["tgagent[anthropic,openai,speedups,proxy,youtube]"]
 dev = [
   "tgagent[anthropic,openai,proxy]",
   "pytest>=8.2",
