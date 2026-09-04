@@ -104,3 +104,5 @@ desktop.ini
 
 # Written by the CI dependency audit (and by `hermes check` if run the same way).
 requirements-audit.txt
+
+.claude/

@@ -10,7 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "tgagent contributors" }]
-keywords = ["telegram", "mtproto", "agent", "llm", "telethon", "automation"]
+keywords = [
+  "telegram", "telegram-api", "mtproto", "telethon", "userbot",
+  "ai-agent", "llm-agent", "agentic-ai", "llm", "tool-use",
+  "claude", "anthropic", "openai", "personal-assistant",
+  "automation", "self-hosted", "prompt-injection", "sandbox",
+]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
@@ -19,7 +24,12 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Communications :: Chat",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Systems Administration",
+  "Operating System :: OS Independent",
   "Typing :: Typed",
 ]
 
